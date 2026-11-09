@@ -114,12 +114,21 @@
     section.soft { background: var(--bg-soft); }
     h2 { font-size: clamp(26px, 3.4vw, 36px); line-height: 1.2; margin: 0 0 12px; letter-spacing: -.01em; }
     .sub { color: var(--muted); max-width: 680px; margin: 0 0 36px; font-size: 17px; }
-    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+    .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
     .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 24px; }
     .card .ico { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; font-size: 19px;
                  background: var(--brand-soft); color: var(--brand); margin-bottom: 14px; }
     .card h3 { margin: 0 0 6px; font-size: 18px; }
     .card p { margin: 0; color: var(--muted); font-size: 15px; }
+
+    .proof { margin-top: 44px; }
+    .proof h3 { display: flex; align-items: center; gap: 10px; margin: 0 0 4px; font-size: 18px; }
+    .proof h3 i { color: var(--brand); }
+    .proof > p { margin: 0 0 18px; color: var(--muted); font-size: 15px; max-width: 760px; }
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+    .stat { background: var(--bg-soft); border: 1px solid var(--line); border-radius: 16px; padding: 20px 22px; }
+    .stat b { display: block; font-size: 28px; font-weight: 800; line-height: 1.2; letter-spacing: -.01em; color: var(--brand); white-space: nowrap; }
+    .stat span { display: block; margin-top: 6px; font-size: 14px; color: var(--muted); }
 
     .steps { counter-reset: s; display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
     .step { position: relative; padding: 24px 22px 22px; border-radius: 16px; border: 1px dashed var(--line); }
@@ -166,6 +175,9 @@
     footer .by img { width: 30px; height: 30px; }
     footer .links { margin-left: auto; display: flex; gap: 18px; }
 
+    @media (max-width: 1060px) {
+      .grid, .stats { grid-template-columns: 1fr 1fr; }
+    }
     @media (max-width: 900px) {
       .hero-grid, .split, .install { grid-template-columns: minmax(0, 1fr); }
       .grid, .req { grid-template-columns: 1fr 1fr; }
@@ -173,7 +185,7 @@
       .nav nav a.lnk, .nav nav .sep { display: none; }
     }
     @media (max-width: 560px) {
-      .grid, .steps, .req { grid-template-columns: 1fr; }
+      .grid, .steps, .req, .stats { grid-template-columns: 1fr; }
       .dl a { min-width: 0; width: 100%; }
       footer .links { margin-left: 0; }
     }
@@ -223,20 +235,34 @@
     <section id="tinh-nang">
       <div class="wrap">
         <h2>Mọi thứ để có phụ đề tiếng Việt chuẩn</h2>
-        <p class="sub">Từ nhận dạng lời thoại, cắt câu, dịch có ngữ cảnh đến đọc thuyết minh. Bạn chỉ cần kéo thả video.</p>
+        <p class="sub">Từ tách lời khỏi nhạc nền, nhận dạng, cắt câu, dịch có ngữ cảnh đến đọc thuyết minh. Bạn chỉ cần kéo thả video.</p>
         <div class="grid">
           <div class="card"><div class="ico"><i class="fa-solid fa-microphone-lines" aria-hidden="true"></i></div><h3>Nhận dạng ngay trên máy</h3>
             <p>Whisper chạy offline: Mac chip M dùng GPU (mlx-whisper), Mac Intel và Windows dùng faster-whisper. Audio không rời khỏi máy.</p></div>
+          <div class="card"><div class="ico"><i class="fa-solid fa-wave-square" aria-hidden="true"></i></div><h3>Tách lời khỏi nhạc nền</h3>
+            <p>Trước khi Whisper nghe, app tách giọng nói ra khỏi nhạc và tiếng ồn, nên bắt được nhiều câu hơn, ít câu bịa hơn. Mac chip M tách bằng GPU nên làm cả tập còn nhanh hơn.</p></div>
           <div class="card"><div class="ico"><i class="fa-solid fa-closed-captioning" aria-hidden="true"></i></div><h3>Cắt câu chuẩn phụ đề</h3>
             <p>Tối đa 2 dòng, ngắt ở cuối câu và khi người nói dừng, căn giờ theo từng từ. Tự lọc câu Whisper hay “bịa” ở đoạn nhạc.</p></div>
-          <div class="card"><div class="ico"><i class="fa-solid fa-language" aria-hidden="true"></i></div><h3>Dịch giữ tên riêng, xưng hô</h3>
-            <p>Claude lập bảng tên riêng và bảng xưng hô theo từng cặp nhân vật (anh/em, tôi/cậu…), nhớ qua các tập của cùng một bộ phim.</p></div>
           <div class="card"><div class="ico"><i class="fa-solid fa-eye" aria-hidden="true"></i></div><h3>Né phụ đề in sẵn</h3>
             <p>Video đã có phụ đề cứng ở dưới? vsub dò bằng OCR và tự đặt phụ đề mới lên phía trên để không đè lên nhau.</p></div>
+          <div class="card"><div class="ico"><i class="fa-solid fa-language" aria-hidden="true"></i></div><h3>Dịch giữ tên riêng, xưng hô</h3>
+            <p>Claude lập bảng tên riêng và bảng xưng hô theo từng cặp nhân vật (anh/em, tôi/cậu…), nhớ qua các tập của cùng một bộ phim.</p></div>
+          <div class="card"><div class="ico"><i class="fa-solid fa-gauge-high" aria-hidden="true"></i></div><h3>Dịch vừa tốc độ đọc</h3>
+            <p>Câu dịch được viết vừa thời gian hiện trên màn hình (tiếng Việt khoảng 17 ký tự/giây). Câu nào vẫn dài quá thì Claude viết gọn lại mà vẫn giữ ý.</p></div>
           <div class="card"><div class="ico"><i class="fa-solid fa-volume-high" aria-hidden="true"></i></div><h3>Thuyết minh tiếng Việt</h3>
             <p>VieNeu-TTS đọc bản dịch. App đo âm gốc trước rồi giảm vừa đủ ở từng câu. Xuất video có track thuyết minh và track âm gốc.</p></div>
           <div class="card"><div class="ico"><i class="fa-solid fa-arrows-rotate" aria-hidden="true"></i></div><h3>Tự cài, tự cập nhật</h3>
             <p>Tab “Thư viện” kiểm tra FFmpeg, Whisper, Claude, VieNeu và cài giúp khi thiếu. Có bản mới thì báo ngay, cập nhật bằng một nút bấm.</p></div>
+        </div>
+        <div class="proof">
+          <h3><i class="fa-solid fa-chart-simple" aria-hidden="true"></i>Đo trên một tập phim thật</h3>
+          <p>Cùng một tập phim 43 phút, trước và sau khi có tách lời và dịch theo tốc độ đọc. Phụ đề tiếng Anh in sẵn trong phim được dùng làm đáp án để so. Phim khác có thể chênh nhiều hoặc ít hơn.</p>
+          <div class="stats">
+            <div class="stat"><b>568 → 575</b><span>câu thoại bắt được, trên tổng 603 câu</span></div>
+            <div class="stat"><b>11 → 2</b><span>câu thừa không khớp lời thoại nào, phần lớn là câu bịa</span></div>
+            <div class="stat"><b>18 → 10 phút</b><span>nhận dạng cả tập trên Mac M1 Max, tính cả bước tách lời</span></div>
+            <div class="stat"><b>20% → 6%</b><span>câu dịch hiện quá nhanh, không kịp đọc</span></div>
+          </div>
         </div>
       </div>
     </section>
@@ -263,6 +289,7 @@
           <ul class="ticks">
             <li><b>FFmpeg, Whisper</b>: bắt buộc, cài sẵn ngay lần mở đầu.</li>
             <li><b>Model Whisper</b>: tự tải lần chạy đầu (large-v3-turbo 1,6 GB), báo trước dung lượng.</li>
+            <li><b>Model tách giọng</b>: tự tải lần đầu bật tách lời (67 MB).</li>
             <li><b>Claude CLI</b>: để dịch; cài và đăng nhập bằng một nút.</li>
             <li><b>VieNeu-TTS</b>: chỉ cần khi bật thuyết minh; cài vào môi trường riêng rồi đọc thử một câu.</li>
             <li>Mọi lệnh cài đều hỏi trước và chạy trong cửa sổ dòng lệnh để bạn thấy rõ.</li>
@@ -313,12 +340,14 @@
           <p>vsub miễn phí. Nhận dạng giọng nói và thuyết minh chạy trên máy bạn. Riêng bước dịch dùng Claude qua Claude Code, nên cần tài khoản Claude
             (gói của bạn quyết định giới hạn và chi phí). Không dịch thì không cần tài khoản.</p></details>
         <details><summary>Audio của phim có bị gửi lên mạng không?</summary>
-          <p>Không. Whisper nhận dạng ngay trên máy. Khi dịch, chỉ phần chữ của phụ đề (và thông tin phim bạn tự điền) được gửi cho Claude.</p></details>
+          <p>Không. Tách lời và nhận dạng đều chạy ngay trên máy. Khi dịch, chỉ phần chữ của phụ đề (và thông tin phim bạn tự điền) được gửi cho Claude.</p></details>
         <details><summary>Hỗ trợ những ngôn ngữ nào?</summary>
           <p>Whisper nhận dạng được hàng chục ngôn ngữ (Nhật, Hàn, Trung, Anh, Việt, Thái…). Claude dịch sang Tiếng Việt, English, 中文, 日本語, 한국어.
             Thuyết minh hiện có tiếng Việt, 15 giọng đọc VieNeu-TTS chọn sẵn trong app (nam, nữ; Bắc, Trung, Nam).</p></details>
         <details><summary>Một tập phim 45 phút mất bao lâu?</summary>
-          <p>Trên Mac M1 Max: nhận dạng khoảng 15–25 phút tuỳ model, dịch vài phút, thuyết minh khoảng 5 phút. Máy chạy CPU (Windows, Mac Intel) chậm hơn.</p></details>
+          <p>Trên Mac M1 Max: tách lời và nhận dạng khoảng 10 phút với model mặc định (tách lời giúp Whisper bỏ qua những đoạn chỉ có nhạc), dịch vài phút,
+            thuyết minh khoảng 5 phút. Máy chạy CPU (Windows, Mac Intel) chậm hơn. Ở đó tách lời có thể thêm hơn 30 phút mỗi tập nên mặc định tắt;
+            muốn dùng thì bật ở <b>Cài đặt → Tách giọng</b>.</p></details>
         <details><summary>Cập nhật bản mới thế nào?</summary>
           <p>Có bản mới, app hiện banner báo ở đầu cửa sổ. Bấm <b>Cập nhật ngay</b> để app tự tải và thay bản cũ, hoặc <b>Tải thủ công</b> để tự tải gói mới.
             Bạn cũng có thể bấm <b>Kiểm tra cập nhật</b> ở cuối cửa sổ bất cứ lúc nào.</p></details>
