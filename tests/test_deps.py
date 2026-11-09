@@ -10,7 +10,7 @@ from vsub import deps
 IS_WIN = sys.platform.startswith("win")
 
 
-@pytest.mark.parametrize("keys", [["ffmpeg"], ["whisper"], ["model"], ["claude"], ["vieneu"],
+@pytest.mark.parametrize("keys", [["ffmpeg"], ["whisper"], ["model"], ["sepmodel"], ["claude"], ["vieneu"],
                                   ["ffmpeg", "whisper", "claude", "vieneu"]])
 def test_install_scripts_are_valid(keys, tmp_path):
     summary, script = deps.install_plan(keys)

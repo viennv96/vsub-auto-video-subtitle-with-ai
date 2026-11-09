@@ -17,6 +17,7 @@ import webbrowser
 from tkinter import filedialog, messagebox, ttk
 
 from . import __version__
+from .backends import is_apple_silicon
 
 SITE_URL = "https://viennv.dev"
 SITE_TAGLINE = "MMO VPS — máy chủ ảo, máy chủ vật lý, proxy tĩnh và máy chủ phát trực tiếp"
@@ -110,6 +111,13 @@ def expand_inputs(paths: list[str]) -> list[str]:
 
 
 # Những việc Claude làm thêm khi dịch — mặc định TẮT (mỗi tập dịch độc lập, nhanh và rẻ hơn)
+SEPARATE_HINT = (
+    "Bắt thêm lời lẫn trong nhạc, bớt chữ bịa. Lần đầu tải model 67 MB; tách ~2–3 phút mỗi tập 45 phút (GPU)."
+    if is_apple_silicon() else
+    "Bắt thêm lời lẫn trong nhạc, bớt chữ bịa. Lần đầu tải model 67 MB. Máy này tách bằng CPU nên chậm:"
+    " tập 45 phút có thể thêm 30 phút trở lên."
+)
+
 READ_OPTIONS = [
     ("read_links", "Đọc các link trong tab “Thông tin phim”"),
     ("read_prev", "Đọc lại phụ đề đã dịch của các tập khác (cùng thư mục / “Tệp đã dịch”)"),
@@ -297,6 +305,15 @@ class App:
         self.position = ttk.Combobox(opts, state="readonly", width=34, values=[n for n, _ in POSITIONS])
         self.position.current(0)
         self.position.grid(row=2, column=1, sticky="w", padx=8)
+        ttk.Label(opts, text="Tách giọng:").grid(row=3, column=0, sticky="w", pady=3)
+        # mặc định bật trên Mac chip M (GPU: nhanh, đo trên ep3 còn nhanh hơn vì Whisper nghe ít hơn)
+        self.sep_var = tk.BooleanVar(value=bool(load_settings().get("separate", is_apple_silicon())))
+        self.sep_var.trace_add("write", lambda *_: save_settings({**load_settings(), "separate": self.sep_var.get()}))
+        ttk.Checkbutton(opts, text="Tách lời thoại khỏi nhạc nền, tiếng ồn trước khi nhận dạng",
+                        variable=self.sep_var).grid(row=3, column=1, columnspan=2, sticky="w", padx=8)
+        ttk.Label(
+            opts, foreground="gray", text=SEPARATE_HINT,
+        ).grid(row=4, column=1, columnspan=2, sticky="w", padx=8)
         ttk.Separator(opts).grid(row=6, column=0, columnspan=3, sticky="ew", pady=8)
         ttk.Label(opts, text="Dịch bằng Claude sang:").grid(row=7, column=0, sticky="w", pady=3)
         self.target = ttk.Combobox(opts, state="readonly", width=34, values=[n for n, _ in TARGETS])
@@ -712,7 +729,8 @@ class App:
         self.cancel.clear()
         self.errors.clear()
         self.set_running(True)
-        self.worker = threading.Thread(target=self.work, args=(jobs, lang, model, tr, pos), daemon=True)
+        self.worker = threading.Thread(target=self.work, args=(jobs, lang, model, tr, pos, self.sep_var.get()),
+                                       daemon=True)
         self.worker.start()
 
     def dub_settings(self) -> tuple[str, float | None]:
@@ -830,7 +848,7 @@ class App:
                 ttk.Button(btns, text=d.action, command=lambda k=d.key: self.install([k])).pack(side="left")
             if d.guide:
                 self._link(btns, "Hướng dẫn", lambda d=d: self.show_guide(d)).pack(side="left", padx=(10, 0))
-        missing = [d for d in deps if not d.ok and d.key != "model"]
+        missing = [d for d in deps if not d.ok and d.key not in ("model", "sepmodel")]  # 2 model này tự tải
         self.deps_lbl.config(text=f"Kiểm tra lúc {time.strftime('%H:%M')}"
                                   + (f" — thiếu {len(missing)} thành phần" if missing else " — đủ cả"))
         warn = any(not d.ok and (d.required or d.key == "claude") for d in deps)
@@ -944,7 +962,7 @@ class App:
     def emit(self, *ev) -> None:
         self.q.put(ev)
 
-    def work(self, jobs: list, lang, model: str, tr, pos: str = "auto") -> None:
+    def work(self, jobs: list, lang, model: str, tr, pos: str = "auto", separate: bool = False) -> None:
         """jobs: [(đường dẫn video, hồ sơ phim)] theo đúng thứ tự tập."""
         import numpy as np
 
@@ -973,6 +991,11 @@ class App:
                     text = " ".join(s.text.strip() for s in segs)
                     self.emit("progress", i + 1, n, chunk.start, text, eta)
 
+                def sep_progress(done, total):
+                    if self.cancel.is_set():
+                        raise Cancelled()
+                    self.emit("sprogress", done, total)
+
                 use_lang = lang or (profile.source_lang or None)
                 if not lang and use_lang:
                     self.emit("log", f"  Ngôn ngữ gốc theo hồ sơ phim: {use_lang}")
@@ -981,6 +1004,7 @@ class App:
                     progress=progress,
                     status=lambda m: (self.emit("stage", m.strip("• ").strip()),
                                       m.lstrip().startswith(("→", "!")) and self.emit("log", "  " + m.strip())),
+                    separate=separate, separate_progress=sep_progress,
                 )
                 if t.language and t.language != profile.source_lang:
                     profile.source_lang = t.language
@@ -1145,6 +1169,10 @@ class App:
             self.stage.config(text=f"Đang nhận dạng: đoạn {i}/{n}{eta_s}")
             if text:
                 self.write(f"  [{_fmt(at)}] {text[:90]}")
+        elif kind == "sprogress":
+            done, total = a
+            self.bar.config(value=100 * done / total if total else 0)
+            self.stage.config(text=f"Đang tách giọng khỏi nhạc nền: {_fmt(done)} / {_fmt(total)}")
         elif kind == "done":
             name, out, n, lang, secs = a
             self.last_out = out

@@ -28,7 +28,7 @@ MODEL_SIZES = {"large-v3-turbo": "1,6 GB", "large-v3": "3,1 GB", "medium": "1,5 
 
 @dataclass
 class Dep:
-    key: str            # ffmpeg | whisper | model | claude | vieneu
+    key: str            # ffmpeg | whisper | model | sepmodel | claude | vieneu
     name: str
     need: str           # "Bắt buộc" | "Để dịch" | "Để thuyết minh" ...
     purpose: str
@@ -149,6 +149,18 @@ def check_model(model: str) -> Dep:
                "Không cần làm gì: bấm Tạo phụ đề, app tự tải. Bấm “Tải trước” để tải ngay bây giờ.")
 
 
+def check_sep_model() -> Dep:
+    from .separate import MODEL_SIZE, model_downloaded as sep_downloaded
+
+    got = sep_downloaded()
+    return Dep("sepmodel", "Model tách giọng", "Tự tải lần đầu", "Tách giọng khỏi nhạc nền trước khi nhận dạng",
+               got, "Đã tải về máy" if got else
+               f"Chưa tải — lần đầu bật “Tách giọng” sẽ tải {MODEL_SIZE / 1e6:.0f} MB",
+               None if got else "Tải trước",
+               "Không cần làm gì: bật “Tách giọng khỏi nhạc nền” rồi bấm Tạo phụ đề, app tự tải. "
+               "Bấm “Tải trước” để tải ngay bây giờ.")
+
+
 def claude_status() -> tuple[str | None, bool | None, str]:
     """(đường dẫn claude, đã đăng nhập?, phiên bản). Đăng nhập = None nếu không hỏi được."""
     from .translate import find_claude
@@ -201,7 +213,7 @@ def check_vieneu() -> Dep:
 
 
 def check_all(model: str = "large-v3-turbo") -> list[Dep]:
-    return [check_ffmpeg(), check_whisper(), check_model(model), check_claude(), check_vieneu()]
+    return [check_ffmpeg(), check_whisper(), check_model(model), check_sep_model(), check_claude(), check_vieneu()]
 
 
 # ------------------------------------------------------------------ cài đặt
@@ -274,6 +286,11 @@ def _plan(key: str, model: str) -> tuple[str, list[tuple[str, str]]]:
         code = f"from huggingface_hub import snapshot_download; print(snapshot_download({repo!r}))"
         steps.append(("run", _call(py, "-c", code)))
         summary = f"Tải model {repo} ({MODEL_SIZES.get(model, '')}) từ Hugging Face"
+    elif key == "sepmodel":
+        from .separate import MODEL_SIZE, MODEL_URL
+
+        steps.append(("run", _call(py, "-c", "from vsub.separate import ensure_model; print(ensure_model(print))")))
+        summary = f"Tải model tách giọng Kim_Vocal_2 ({MODEL_SIZE / 1e6:.0f} MB) từ {MODEL_URL.split('/releases')[0]}"
     elif key == "claude":
         from .translate import find_claude
 

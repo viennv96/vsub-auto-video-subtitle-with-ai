@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .models import Cue, Word
-from .reflow import CJK_LANGS, split_lines
+from .reflow import CJK_LANGS, cue_cps, display_limit, fit_reading_time, reading_cps, split_lines
 
 LANG_NAMES = {
     "vi": "Vietnamese", "en": "English", "ja": "Japanese", "zh": "Chinese (Simplified)",
@@ -255,7 +255,7 @@ def translate_prompts(src: str | None, dst: str) -> tuple[str, str]:
 Input fields: "glossary" (mandatory spellings for names/terms), "pronouns" (how each speaker refers to
 themself and addresses each listener), "notes" (context of the episode), "story" (earlier episodes and
 this one, for understanding only), "context_before"/"context_after" (neighbouring lines, for understanding
-only — do NOT translate them), "lines" (the lines to translate, each with an "id").
+only — do NOT translate them), "lines" (the lines to translate, each with an "id" and, usually, "max_chars").
 
 Return JSON: an object mapping each id (as a string) to its {dst_name} translation, e.g. {{"12": "...", "13": "..."}}.
 
@@ -277,8 +277,39 @@ Rules:
   lines around it.
 - Speech recognition can contain small errors; translate what was most likely said, using context.
 - Keep it short like real subtitles; keep the speaker's tone (polite, rude, joking, shouting).
+- Reading speed: "max_chars" is how many characters (spaces and punctuation included) a viewer can
+  comfortably read while the line is on screen. Aim for it. When the full wording does not fit, condense the
+  way professional subtitlers do: drop fillers, hesitations, repetitions and words the scene makes obvious,
+  use shorter synonyms. Meaning comes first: never drop what the line is there to say (its point, names,
+  numbers, negations, who does what to whom) and never cut a sentence down to a fragment just to fit —
+  going over by up to about 30% is better than losing meaning.
 - Keep sound tags in brackets and music notes (♪) but translate the words inside.
 - Write each translation on a single line (no line breaks).{viet}"""
+    return system, instruction
+
+
+def shorten_prompts(dst: str) -> tuple[str, str]:
+    dst_name = LANG_NAMES.get(dst, dst)
+    system = (
+        f"You are a professional {dst_name} subtitle editor. You condense subtitles that are too long to read "
+        "in the time they are on screen. Reply with JSON only, no commentary."
+    )
+    instruction = f"""stdin is JSON: "glossary" (mandatory spellings of names) and "lines": each has "id", "original"
+(the source-language line, may be empty), "text" (its current {dst_name} subtitle, too long), "max_chars"
+(the most characters, spaces and punctuation included, a viewer can read in time), and "before"/"after"
+(the neighbouring subtitles, for context only).
+
+Return JSON: an object mapping each id (as a string) to a shorter {dst_name} subtitle, e.g. {{"12": "..."}}.
+
+Rules:
+- Aim for at most "max_chars" characters. Condense like a professional subtitler: drop fillers, hesitations,
+  repetitions, words the scene or the neighbouring lines make obvious; use shorter synonyms and simpler grammar.
+- Keep what the line is there to say: its point, names, numbers, negations, who does what to whom; questions
+  stay questions. Never cut it down to a fragment — up to about 30% over is better than losing meaning.
+- Keep every name exactly as written, and keep the same forms of address (pronouns) as the current text.
+- Keep the speaker's tone. One line of text, no line breaks.
+- If it truly cannot fit without losing essential meaning, return the shortest faithful version even if it
+  is a little over."""
     return system, instruction
 
 
@@ -332,6 +363,9 @@ class TranslateResult:
     pronouns: list[dict] = field(default_factory=list)  # cặp xưng hô Claude lập ở tập này
     summary: str = ""   # tóm tắt tập
     ending: str = ""    # tình hình cuối tập, để tập sau nối mạch
+    max_cps: float = 0.0   # tốc độ đọc tối đa đã áp (0 = không kiểm)
+    too_fast: int = 0      # số câu dịch vẫn nhanh hơn max_cps
+    shortened: int = 0     # số câu Claude rút gọn thêm ở lượt kiểm tốc độ đọc
 
 
 def absorb_source(runner: ClaudeRunner, kind: str, payload: dict, source: str | None, target: str) -> dict:
@@ -376,12 +410,20 @@ def translate_cues(
     status: Callable[[str], None] | None = None,
     cancel: threading.Event | None = None,
     story: dict | None = None,
+    max_cps: float | None = None,
 ) -> TranslateResult:
     """`story`: những gì đã biết về phim (Profile.story trong series.py) — tên riêng, xưng hô,
-    tóm tắt các tập trước, nội dung và xưng hô người dùng ghi."""
+    tóm tắt các tập trước, nội dung và xưng hô người dùng ghi.
+
+    `max_cps`: tốc độ đọc tối đa (ký tự/giây); None = theo ngôn ngữ đích (tiếng Việt 17), 0 = không kiểm.
+    Mỗi câu gửi kèm số ký tự đọc kịp; dịch xong thì câu được hiện lâu hơn nếu còn chỗ trống,
+    câu vẫn quá nhanh thì Claude rút gọn thêm một lượt."""
     runner = runner or ClaudeRunner()
     say = status or (lambda _m: None)
     texts = [join_lines(c.lines) for c in cues]
+    cps = reading_cps(target) if max_cps is None else max_cps
+    cap = _line_cap(target)
+    budgets = [_budget(cues, i, cps, cap) for i in range(len(cues))] if cps > 0 else []
     known = story or {}
 
     # 1) bảng tên riêng + xưng hô
@@ -440,7 +482,8 @@ def translate_cues(
                 "notes": batch_notes,
                 "story": story_ctx,
                 "context_before": texts[max(0, lo - context):lo],
-                "lines": [{"id": i, "text": texts[i]} for i in todo],
+                "lines": [{"id": i, "text": texts[i], **({"max_chars": budgets[i]} if budgets else {})}
+                          for i in todo],
                 "context_after": texts[hi + 1:hi + 1 + context],
             }, ensure_ascii=False)
             try:
@@ -489,21 +532,105 @@ def translate_cues(
 
     missing = sum(1 for i in range(len(cues)) if i not in out)
     new_cues: list[Cue] = []
+    srcs: list[str] = []          # câu gốc của từng câu dịch (để rút gọn có ngữ cảnh)
+    translated: list[bool] = []
     splits = 0
     for i, c in enumerate(cues):
         v = out.get(i)
         if v is None:
-            new_cues.append(Cue(c.start, c.end, list(c.lines)))
+            parts = [(c.start, c.end, None)]
         elif isinstance(v, str):
-            new_cues.append(Cue(c.start, c.end, wrap_text(v, target)))
+            parts = [(c.start, c.end, v)]
         else:
             parts = split_cue(c, texts[i], v)
             splits += len(parts) > 1
-            new_cues.extend(Cue(s, e, wrap_text(t, target)) for s, e, t in parts)
+        for s, e, t in parts:
+            new_cues.append(Cue(s, e, list(c.lines) if t is None else wrap_text(t, target)))
+            srcs.append(texts[i])
+            translated.append(t is not None)
     if splits:
         say(f"Tách {splits} câu bị gộp lời của nhiều người")
+
+    too_fast = shortened = 0
+    if cps > 0 and new_cues:
+        fit_reading_time(new_cues, cps)
+        shortened = _shorten_pass(runner, new_cues, srcs, translated, target, glossary, cps, cap,
+                                  workers, cancel, say)
+        too_fast = sum(1 for c, ok in zip(new_cues, translated) if ok and cue_cps(c) > cps)
+        say(f"Tốc độ đọc: {too_fast}/{len(new_cues)} câu nhanh hơn {cps:g} ký tự/giây"
+            + (f" (Claude đã rút gọn {shortened} câu)" if shortened else ""))
     return TranslateResult(new_cues, glossary, ep_notes, missing, runner.total_cost, splits,
-                           ep_pronouns, summary, ending)
+                           ep_pronouns, summary, ending, cps, too_fast, shortened)
+
+
+# ------------------------------------------------------------------ tốc độ đọc
+
+# Prompt cho phép vượt max_chars khoảng 30% để giữ nghĩa, nên chỉ rút gọn thêm câu vượt quá mức đó.
+# (Bản ép đúng 17 ký tự/giây, sàn 8 ký tự: chấm mù trên ep3 thấy 14/127 câu bị mất ý so với bản dịch cũ.)
+SHORTEN_TOLERANCE = 1.3
+MIN_BUDGET = 14  # câu rất ngắn vẫn đủ chỗ cho một ý trọn vẹn
+
+
+def _line_cap(target: str, max_lines: int = 2) -> int:
+    """Số ký tự tối đa của một câu theo khổ dòng (wrap_text: 42 ký tự, CJK 16, mỗi câu 2 dòng)."""
+    return (16 if target in CJK_LANGS else 42) * max_lines
+
+
+def _budget(cues: list[Cue], i: int, cps: float, cap: int) -> int:
+    """Số ký tự đọc kịp của câu i: thời gian nó được hiện (kể cả phần kéo dài vào khoảng trống sau) × cps."""
+    shown = display_limit(cues, i) - cues[i].start
+    return max(MIN_BUDGET, min(cap, int(shown * cps)))
+
+
+def _shorten_pass(runner: ClaudeRunner, cues: list[Cue], srcs: list[str], translated: list[bool],
+                  target: str, glossary: dict[str, str], cps: float, cap: int, workers: int,
+                  cancel: threading.Event | None, say: Callable[[str], None], batch_size: int = 40) -> int:
+    """Nhờ Claude rút gọn những câu dịch vẫn đọc không kịp sau khi đã kéo dài thời gian hiện.
+    Trả về số câu đã thay bằng bản ngắn hơn."""
+    over = [i for i, (c, ok) in enumerate(zip(cues, translated)) if ok and cue_cps(c) > cps * SHORTEN_TOLERANCE]
+    if not over:
+        return 0
+    say(f"Claude đang rút gọn {len(over)} câu đọc không kịp…")
+    system, instr = shorten_prompts(target)
+    cur = [join_lines(c.lines) for c in cues]
+
+    def run(ids: list[int]) -> dict[int, str]:
+        payload = json.dumps({"glossary": glossary, "lines": [{
+            "id": i, "original": srcs[i], "text": cur[i],
+            "max_chars": max(MIN_BUDGET, min(cap, int((cues[i].end - cues[i].start) * cps))),
+            "before": cur[i - 1] if i else "", "after": cur[i + 1] if i + 1 < len(cur) else "",
+        } for i in ids]}, ensure_ascii=False)
+        try:
+            data = extract_json(runner.ask(system, instr, payload))
+        except ValueError:
+            return {}
+        except ClaudeError as e:  # lượt phụ: lỗi thì giữ bản dịch cũ, chỉ dừng khi chưa đăng nhập
+            if "login" in str(e).lower():
+                raise
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {int(k): v.strip() for k, v in data.items()
+                if str(k).isdigit() and int(k) in ids and isinstance(v, str) and v.strip()}
+
+    got: dict[int, str] = {}
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        futs = [pool.submit(run, over[k:k + batch_size]) for k in range(0, len(over), batch_size)]
+        try:
+            for fut in as_completed(futs):
+                got.update(fut.result())
+                if cancel and cancel.is_set():
+                    raise Cancelled()
+        except BaseException:
+            for f in futs:
+                f.cancel()
+            raise
+    n = 0
+    for i, text in got.items():
+        if len(text) < len(cur[i]):
+            cues[i].lines = wrap_text(text, target)
+            n += 1
+    return n
 
 
 _NONTEXT = re.compile(r"[\s\W_]+", re.UNICODE)

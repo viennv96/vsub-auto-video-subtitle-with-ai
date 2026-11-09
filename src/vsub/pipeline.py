@@ -69,6 +69,7 @@ class Transcript:
     elapsed: float = 0.0
     hardsub: dict | None = None  # kết quả kiểm tra phụ đề in sẵn
     uncertain: list[tuple[float, float]] = field(default_factory=list)  # vùng VAD bỏ nhưng audio to
+    separated: bool = False  # nhận dạng trên bản đã tách giọng (separate.py)
 
     def save(self, path: str) -> None:
         d = asdict(self)
@@ -121,12 +122,22 @@ def transcribe_video(
     progress: Callable | None = default_progress,
     audio=None,
     status: Callable[[str], None] | None = default_status,
+    separate: bool = False,
+    separate_progress: Callable[[float, float], None] | None = None,
 ) -> Transcript:
     """progress(i, n, chunk, segments, eta) được gọi sau mỗi chunk; nó có thể
-    raise exception để dừng giữa chừng (giao diện dùng để làm nút Dừng)."""
+    raise exception để dừng giữa chừng (giao diện dùng để làm nút Dừng).
+
+    separate=True: tách giọng khỏi nhạc nền / tiếng động trước (separate.py), rồi VAD và Whisper
+    đều chạy trên bản chỉ còn giọng. separate_progress(giây đã tách, tổng giây) cũng raise được để dừng."""
     say = status or (lambda _m: None)
     t0 = time.time()
-    if audio is None:
+    if audio is None and separate:
+        from .separate import load_vocals
+
+        say("• Đang tách giọng khỏi nhạc nền...")
+        audio = load_vocals(video, progress=separate_progress, status=say)
+    elif audio is None:
         say("• Đang tách audio...")
         audio = load_audio(video)
     total = len(audio) / SAMPLE_RATE
@@ -219,6 +230,7 @@ def transcribe_video(
         uncertain=uncertain,
         requested_language=opts.language,
         elapsed=time.time() - t0,
+        separated=separate,
     )
 
 

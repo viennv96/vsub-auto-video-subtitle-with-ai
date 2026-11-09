@@ -63,6 +63,9 @@ def _add_translate_args(p: argparse.ArgumentParser, flag: str = "--to") -> None:
                    help="ghi những gì học được ở tập này vào hồ sơ phim (mặc định tắt)")
     g.add_argument("--no-profile", action="store_true",
                    help="không đụng tới hồ sơ phim (kể cả nội dung / xưng hô bạn tự điền)")
+    g.add_argument("--max-cps", type=float,
+                   help="tốc độ đọc tối đa của bản dịch, ký tự/giây (mặc định theo ngôn ngữ: tiếng Việt 17;"
+                        " 0 = không kiểm)")
 
 
 def _do_translate(srt: str, source: str | None, a, cues=None, position: str | None = None) -> str:
@@ -97,7 +100,7 @@ def _do_translate(srt: str, source: str | None, a, cues=None, position: str | No
     res = translate_cues(
         cues, a.to, source, runner, glossary, a.notes,
         progress=lambda d, n: print(f"  lô {d}/{n}", file=sys.stderr, flush=True),
-        status=say, story=story,
+        status=say, story=story, max_cps=a.max_cps,
     )
     write_subs(res.cues, out, position)
     if profile and a.learn:
@@ -178,7 +181,7 @@ def _do_dub(video: str, subs: str, a, out: str | None = None) -> str:
 
 def cmd_run(a) -> None:
     from .audio import require_ffmpeg
-    from .backends import TranscribeOptions, make_backend
+    from .backends import TranscribeOptions, is_apple_silicon, make_backend
     from .formats import write_subs
     from .pipeline import Transcript, check_hardsubs, make_cues, resolve_position, transcribe_video
 
@@ -191,16 +194,28 @@ def cmd_run(a) -> None:
     task = "translate" if a.translate else "transcribe"
 
     t = None
+    separate = is_apple_silicon() if a.separate is None else a.separate
     if os.path.exists(cache) and not a.force:
         old = Transcript.load(cache)
-        if old.model == a.model and old.task == task and (a.lang in (None, old.language)):
+        # chỉ nhận dạng lại vì tách giọng khi người dùng ghi rõ --separate / --no-separate
+        same_sep = a.separate is None or old.separated == a.separate
+        if old.model == a.model and old.task == task and same_sep and a.lang in (None, old.language):
             print(f"• Dùng lại bản nhận dạng đã lưu: {cache} (thêm --force để chạy lại)", file=sys.stderr)
             t = old
     if t is None:
         if a.translate and "turbo" in a.model:
             print("! Model turbo dịch kém, nên dùng --model large-v3 khi --translate", file=sys.stderr)
         backend = make_backend(a.backend, a.model)
-        t = transcribe_video(video, backend, TranscribeOptions(a.lang, task, a.prompt))
+        shown = [-1]
+
+        def sep_progress(done: float, total: float) -> None:
+            pct = int(100 * done / total) if total else 0
+            if pct // 10 != shown[0]:
+                shown[0] = pct // 10
+                print(f"  tách giọng: {pct}%", file=sys.stderr, flush=True)
+
+        t = transcribe_video(video, backend, TranscribeOptions(a.lang, task, a.prompt),
+                             separate=separate, separate_progress=sep_progress)
         t.save(cache)
         print(f"• Đã lưu bản nhận dạng: {cache} ({t.elapsed / 60:.1f} phút)", file=sys.stderr)
 
@@ -315,6 +330,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--backend", default="auto", choices=["auto", "mlx", "faster-whisper"])
     r.add_argument("--translate", action="store_true", help="dịch sang tiếng Anh (tính năng sẵn của Whisper)")
     r.add_argument("--prompt", help="gợi ý cho model: tên nhân vật, thuật ngữ, văn phong")
+    r.add_argument("--separate", action=argparse.BooleanOptionalAction, default=None,
+                   help="tách giọng khỏi nhạc nền trước khi nhận dạng (model 67 MB). Mặc định bật trên Mac chip M"
+                        " (~2-3 phút/tập, bù lại Whisper nghe ít hơn), tắt trên máy chỉ có CPU (chậm hơn nhiều)")
     r.add_argument("-f", "--format", default="srt", choices=["srt", "vtt"])
     r.add_argument("--transcript", help="nơi lưu bản nhận dạng thô (.transcript.json)")
     r.add_argument("--force", action="store_true", help="nhận dạng lại dù đã có bản lưu")
@@ -356,7 +374,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     k = sub.add_parser("doctor", help="kiểm tra / cài các thành phần cần (FFmpeg, Whisper, Claude, VieNeu)")
     k.add_argument("-m", "--model", default="large-v3-turbo", help="model Whisper sẽ dùng (để kiểm tra đã tải chưa)")
-    k.add_argument("--install", nargs="*", choices=["ffmpeg", "whisper", "model", "claude", "vieneu"],
+    k.add_argument("--install", nargs="*", choices=["ffmpeg", "whisper", "model", "sepmodel", "claude", "vieneu"],
                    help="cài các thành phần còn thiếu (mở Terminal, hỏi trước); không ghi tên = cài hết")
     k.set_defaults(func=cmd_doctor)
     return p

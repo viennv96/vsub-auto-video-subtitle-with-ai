@@ -170,6 +170,47 @@ def fix_timing(cues: list[Cue], opts: ReflowOptions) -> list[Cue]:
     return cues
 
 
+# Tốc độ đọc tối đa cho phim người lớn (ký tự/giây, tính cả dấu cách và dấu câu), theo hướng dẫn
+# phụ đề của Netflix từng ngôn ngữ. Ngôn ngữ không có trong bảng dùng DEFAULT_CPS.
+READING_CPS = {"vi": 17, "en": 20, "ja": 4, "zh": 9, "zh-tw": 9, "yue": 9, "ko": 12, "th": 15}
+DEFAULT_CPS = 17
+MAX_EXTEND = 1.0      # cho câu hiện thêm tối đa chừng này giây sau giờ kết thúc cũ
+MAX_CUE_S = 7.0       # một câu không hiện quá chừng này giây
+
+
+def reading_cps(language: str | None) -> float:
+    return READING_CPS.get((language or "").lower(), DEFAULT_CPS)
+
+
+def cue_chars(cue: Cue) -> int:
+    """Số ký tự người xem phải đọc: các dòng nối bằng một dấu cách, bỏ tag kiểu {\\an8}."""
+    return len(re.sub(r"\{\\[^}]*\}", "", " ".join(l.strip() for l in cue.lines)).strip())
+
+
+def cue_cps(cue: Cue) -> float:
+    return cue_chars(cue) / max(cue.end - cue.start, 0.01)
+
+
+def display_limit(cues: list[Cue], i: int, min_gap: float = 0.08) -> float:
+    """Giờ muộn nhất câu thứ i được hiện tới: trước câu sau, ≤ MAX_EXTEND giây sau giờ kết thúc cũ,
+    tổng cộng ≤ MAX_CUE_S (nhưng không ngắn hơn giờ kết thúc hiện có)."""
+    c = cues[i]
+    nxt = cues[i + 1].start - min_gap if i + 1 < len(cues) else float("inf")
+    return max(c.end, min(nxt, c.end + MAX_EXTEND, c.start + MAX_CUE_S))
+
+
+def fit_reading_time(cues: list[Cue], max_cps: float, min_gap: float = 0.08) -> list[Cue]:
+    """Câu nào đọc không kịp thì cho hiện lâu hơn, lấn vào khoảng trống phía sau (không đè câu sau).
+    Giờ bắt đầu giữ nguyên để chữ vẫn hiện đúng lúc nhân vật nói."""
+    if max_cps <= 0:
+        return cues
+    for i, c in enumerate(cues):
+        need = c.start + cue_chars(c) / max_cps + 1e-3  # +1 ms cho khỏi sai số làm tròn
+        if need > c.end:
+            c.end = min(need, display_limit(cues, i, min_gap))
+    return cues
+
+
 def reflow(segments: list[Segment], language: str | None, opts: ReflowOptions | None = None) -> list[Cue]:
     opts = opts or ReflowOptions()
     cjk = (language or "") in CJK_LANGS

@@ -29,9 +29,21 @@ if mode == "nologin":
     sys.exit(0)
 if "terminology" in system:
     res = "```json\n" + json.dumps({{"terms": [{{"src": "田中", "dst": "Tanaka", "type": "person"}}], "notes": "office drama"}}) + "\n```"
+elif "subtitle editor" in system:  # lượt rút gọn câu đọc không kịp
+    req = json.loads(data)
+    open(state + ".shorten", "w", encoding="utf-8").write(data)
+    # chế độ thường: Claude "không rút gọn được" (trả lại y nguyên) -> app giữ bản cũ
+    res = json.dumps({{str(l["id"]): "Ngắn." if mode == "long" else l["text"] for l in req["lines"]}},
+                     ensure_ascii=False)
 else:
     req = json.loads(data)
     assert req["glossary"]["田中"] == "Tanaka"
+    if mode == "long":
+        open(state + ".lines", "w", encoding="utf-8").write(json.dumps(req["lines"], ensure_ascii=False))
+        print(json.dumps({{"type": "result", "is_error": False, "total_cost_usd": 0.01, "result": json.dumps(
+            {{str(l["id"]): "Một câu dịch rất dài dòng không đọc kịp trong một giây" for l in req["lines"]}},
+            ensure_ascii=False)}}))
+        sys.exit(0)
     first = not os.path.exists(state)
     open(state, "a").write("x")
     out = {{}}
@@ -136,3 +148,31 @@ def test_translate_splits_merged_line(fake_claude, monkeypatch):
     assert res.splits == 1 and len(res.cues) == 4
     assert res.cues[1].text == "VI: 質問ですか" and res.cues[2].text == "VI: はいそうです"
     assert res.cues[1].end < res.cues[2].start and res.cues[2].end == 7
+
+
+def test_reading_speed_budget_and_shorten_pass(fake_claude, monkeypatch, tmp_path):
+    """Mỗi câu gửi kèm max_chars; câu dịch vẫn quá nhanh thì được kéo dài vào khoảng trống,
+    còn không đủ thì Claude rút gọn."""
+    monkeypatch.setenv("FAKE_MODE", "long")
+    cues = [Cue(0.0, 1.0, ["田中さん、行くよ"]), Cue(1.1, 2.1, ["待って"]), Cue(10.0, 13.0, ["終わり"])]
+    res = translate_cues(cues, "vi", "ja", ClaudeRunner(exe=fake_claude), batch_size=10)
+    sent = json.loads((tmp_path / "state.lines").read_text(encoding="utf-8"))
+    # hiện được: câu 0 tới 1.02 (trước câu sau) -> 17 ký tự; câu 1 tới 3.1 (+1 giây) -> 34; câu 2 tới 14 -> 68
+    assert [l["max_chars"] for l in sent] == [17, 34, 68]
+    assert res.max_cps == 17
+    # câu 0, 1 sát nhau, không kéo dài được -> rút gọn; câu 2 đủ thời gian -> giữ nguyên
+    assert res.cues[0].text == "Ngắn." and res.cues[1].text == "Ngắn."
+    assert res.cues[2].text.startswith("Một câu dịch")
+    assert res.shortened == 2 and res.too_fast == 0
+    asked = json.loads((tmp_path / "state.shorten").read_text(encoding="utf-8"))
+    assert [l["id"] for l in asked["lines"]] == [0, 1] and asked["lines"][0]["original"] == "田中さん、行くよ"
+
+
+def test_reading_speed_check_can_be_disabled(fake_claude, monkeypatch, tmp_path):
+    monkeypatch.setenv("FAKE_MODE", "long")
+    cues = [Cue(0.0, 1.0, ["田中さん"]), Cue(1.1, 2.1, ["待って"])]
+    res = translate_cues(cues, "vi", "ja", ClaudeRunner(exe=fake_claude), max_cps=0)
+    sent = json.loads((tmp_path / "state.lines").read_text(encoding="utf-8"))
+    assert all("max_chars" not in l for l in sent)
+    assert not (tmp_path / "state.shorten").exists() and res.shortened == 0
+    assert [c.end for c in res.cues] == [1.0, 2.1]

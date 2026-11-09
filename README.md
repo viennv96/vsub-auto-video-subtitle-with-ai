@@ -54,6 +54,7 @@ Script tự cài ffmpeg, uv và thư viện Python, rồi build **`Vsub.app`** n
 | FFmpeg | bắt buộc | `setup.command` tự cài qua Homebrew |
 | Whisper (mlx-whisper / faster-whisper) | bắt buộc | `setup.command` tự cài |
 | Model Whisper | bắt buộc | tự tải lần chạy đầu (large-v3-turbo 1,6 GB, large-v3 3,1 GB) |
+| Model tách giọng (Kim_Vocal_2) | tách lời khỏi nhạc nền | tự tải lần đầu bật tách giọng (67 MB), xem mục [Tách lời khỏi nhạc nền](#tách-lời-khỏi-nhạc-nền) |
 | Claude CLI (đã đăng nhập) | dịch | cài bằng `curl -fsSL https://claude.ai/install.sh \| bash`, rồi `claude auth login` |
 | VieNeu-TTS | thuyết minh | venv riêng, xem mục [Thuyết minh](#thuyết-minh-bằng-vieneu-tts) |
 
@@ -98,6 +99,10 @@ uv run vsub "phim.mp4"
 
 # Chỉ định ngôn ngữ (chính xác hơn, khỏi bước đoán)
 uv run vsub "phim.mp4" --lang ja
+
+# Bật / tắt tách lời khỏi nhạc nền (mặc định: bật trên Mac chip M, tắt trên máy khác)
+uv run vsub "phim.mp4" --lang ja --separate
+uv run vsub "phim.mp4" --lang ja --no-separate
 
 # Gắn phụ đề mềm (bật/tắt được trong player) -> phim.sub.mp4
 uv run vsub "phim.mp4" --lang ja --embed
@@ -148,6 +153,27 @@ lặp lại ở cùng một dải**. Nếu thấy ở phía dưới, file `.srt`
 (IINA, VLC, mpv, Infuse, Plex…) hiện phụ đề mới ở **phía trên**. Bản dịch cũng vậy.
 Muốn cố định thì dùng `--position top` hoặc `--position bottom`.
 
+## Tách lời khỏi nhạc nền
+
+Trước khi nhận dạng, app tách lời thoại khỏi nhạc nền và tiếng động bằng model MDX-Net **Kim_Vocal_2**
+(ONNX, chạy bằng onnxruntime có sẵn trong gói, không cần cài thêm thư viện). Sau đó VAD và Whisper đều
+nghe bản chỉ còn giọng. Kết quả đo trên một tập phim Nhật 43 phút, lấy 603 câu phụ đề Anh in sẵn làm đáp án:
+
+| | Audio gốc | Tách giọng |
+|---|---|---|
+| Câu có phụ đề | 568 (94,2%) | 575 (95,4%) |
+| Câu thừa (không khớp câu nào, thường là chữ bịa) | 11 | 2 |
+| Độ đúng của chữ (Claude chấm mù, so với phụ đề Anh) | 87,3% | 88,0% |
+| Thời gian trên M1 Max | 18 phút | 2,3 phút tách + 7,6 phút nhận dạng |
+
+Nhanh hơn vì VAD không còn coi đoạn nhạc là "có thể có thoại" nên Whisper nghe ít hơn hẳn (phim ít nhạc
+thì lợi ít hơn). Mac chip M chạy model bằng GPU qua CoreML (~0,15 giây cho mỗi 6 giây audio) nên mặc định
+**bật**. Máy khác chạy bằng CPU, chậm hơn khoảng 17 lần (tập 45 phút có thể thêm 30 phút trở lên), nên mặc
+định **tắt**. Bật/tắt trong tab **Cài đặt** hoặc `--separate` / `--no-separate`.
+
+Model tải về `~/Library/Application Support/vsub/models/` (Windows: `%LOCALAPPDATA%\vsub\models`), có kiểm
+SHA-256. Audio được đọc theo khối 2 phút nên phim dài cũng không tốn nhiều RAM.
+
 ## Chia câu
 
 - Tiếng Nhật và tiếng Trung: Whisper được mồi bằng một câu có dấu câu, nên tự chép ra 。、？!
@@ -176,7 +202,14 @@ Cách dịch giữ nguyên tên riêng và cách xưng hô:
 2. Dịch theo lô khoảng 50 câu, mỗi lô có vài câu trước và sau làm ngữ cảnh, chạy 3 lô
    song song. Với mỗi câu, Claude xác định ai đang nói với ai rồi dùng đúng cặp xưng hô, giữ
    nguyên cặp đó suốt một cảnh. Câu nào Claude trả thiếu sẽ được hỏi lại. Vẫn thiếu thì giữ câu gốc.
-3. Ngắt dòng lại theo độ dài câu dịch, giữ nguyên thời gian.
+3. Ngắt dòng lại theo độ dài câu dịch.
+4. **Tốc độ đọc**: mỗi câu gửi kèm số ký tự người xem đọc kịp trong lúc câu hiện (tiếng Việt 17 ký tự/giây,
+   tính cả dấu cách và dấu câu, theo hướng dẫn phụ đề của Netflix). Claude dịch gọn khi cần nhưng ưu tiên giữ
+   ý. Dịch xong, câu đọc không kịp được hiện lâu thêm tối đa 1 giây nếu còn khoảng trống (không đè câu sau,
+   giờ bắt đầu giữ nguyên). Câu vẫn quá nhanh thì Claude rút gọn thêm một lượt.
+   Đo trên một tập 43 phút: câu nhanh hơn 17 ký tự/giây giảm từ 20% xuống 6%, nhanh hơn 20 ký tự/giây
+   từ 11% xuống 2%. Chấm mù độ giữ nghĩa ở những câu từng quá nhanh: 1,91 → 1,89 (thang 0–2).
+   Đổi giới hạn bằng `--max-cps 20`, tắt bằng `--max-cps 0`.
 
 File tên riêng (`--glossary`): mỗi dòng `tên gốc = cách viết`, dòng bắt đầu `#` là ghi chú.
 Chọn model bằng `--claude-model sonnet|opus|haiku` (mặc định sonnet).
@@ -259,6 +292,8 @@ Dòng lệnh cũng dùng hồ sơ: `--link` và `--ref` (lặp được) thêm l
 
 1. **Tách audio** bằng ffmpeg: mono 16 kHz, có lọc nhẹ highpass/lowpass. File bị mất gói audio giữa phim
    (có tập hụt 6 khúc, mỗi khúc 8 giây) được lấp bằng khoảng lặng để phụ đề sau chỗ hụt không bị sớm dần.
+   Nếu bật tách giọng, audio đi qua model Kim_Vocal_2 trước (44,1 kHz stereo), chỉ giữ lời thoại rồi mới
+   hạ về mono 16 kHz.
 2. **VAD** (Silero): tìm các đoạn có thoại. Silero hay bỏ sót lời nói lẫn nhạc nền hoặc giọng
    qua điện thoại, nên khoảng trống nào audio vẫn to (trên −40 dB) cũng được đưa vào Whisper.
    Chỉ những đoạn im lặng thật mới bị bỏ. Câu nhận ra trong vùng "VAD không chắc" bị lọc gắt hơn
