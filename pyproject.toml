@@ -1,6 +1,6 @@
 [project]
 name = "vsub"
-version = "0.2.0"
+version = "0.3.0"
 description = "Tự động làm phụ đề cho phim/video bằng Whisper (tối ưu cho Apple Silicon với MLX)"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
