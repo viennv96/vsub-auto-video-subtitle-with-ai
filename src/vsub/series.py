@@ -27,6 +27,7 @@ from html.parser import HTMLParser
 from typing import Callable
 
 from .formats import parse_srt
+from .translate import MODEL_TAG_RE as _MODEL_TAG
 from .translate import Cancelled, ClaudeError, ClaudeRunner, absorb_source, join_lines, parse_glossary_text
 
 PROFILE_PREFIX = "ho-so-phim"
@@ -75,8 +76,10 @@ class NameInfo:
 def parse_name(path: str) -> NameInfo:
     p = _nfc(str(path))
     name = os.path.splitext(os.path.basename(p))[0]
-    while _LANG_SUFFIX.search(name):
-        name = _LANG_SUFFIX.sub("", name)
+    if _LANG_SUFFIX.search(name):
+        while _LANG_SUFFIX.search(name):
+            name = _LANG_SUFFIX.sub("", name)
+        name = _MODEL_TAG.sub("", name)  # phim.claude-sonnet.vi -> phim
     name = re.sub(r"[\[{][^\]}]*[\]}]", " ", name.lower())
     name = re.sub(r"\((?!(?:19|20)\d\d\))[^)]*\)", " ", name)  # bỏ ngoặc tròn, trừ năm
     season, ep, marker = 0, None, ""
@@ -508,7 +511,7 @@ def _scan_subs(folder: str, target: str, depth: int = 2) -> list[str]:
 
 def _original_of(translation: str, target: str) -> str:
     base, ext = os.path.splitext(translation)
-    orig = base[: -len(target) - 1] + ext
+    orig = _MODEL_TAG.sub("", base[: -len(target) - 1]) + ext
     return orig if os.path.exists(orig) else ""
 
 

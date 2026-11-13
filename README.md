@@ -56,6 +56,7 @@ Script tự cài ffmpeg, uv và thư viện Python, rồi build **`Vsub.app`** n
 | Model Whisper | bắt buộc | tự tải lần chạy đầu (large-v3-turbo 1,6 GB, large-v3 3,1 GB) |
 | Model tách giọng (Kim_Vocal_2) | tách lời khỏi nhạc nền | tự tải lần đầu bật tách giọng (67 MB), xem mục [Tách lời khỏi nhạc nền](#tách-lời-khỏi-nhạc-nền) |
 | Claude CLI (đã đăng nhập) | dịch | cài bằng `curl -fsSL https://claude.ai/install.sh \| bash`, rồi `claude auth login` |
+| Antigravity CLI `agy` (tuỳ chọn) | dịch bằng Gemini thay cho Claude | cài bằng `curl -fsSL https://antigravity.google/cli/install.sh \| bash`, rồi chạy `agy` một lần để đăng nhập. Xem mục [Dịch bằng Gemini](#dịch-bằng-gemini-antigravity-cli) |
 | VieNeu-TTS | thuyết minh | venv riêng, xem mục [Thuyết minh](#thuyết-minh-bằng-vieneu-tts) |
 
 Tab **Thư viện** trong app cho biết đang có gì, thiếu gì: ✅ đủ, ❌ thiếu thứ bắt buộc, ⚠️ thiếu thứ tuỳ chọn.
@@ -65,13 +66,14 @@ vsub, app tự kiểm tra lại. Link **Hướng dẫn** hiện lệnh để t�
 
 App cũng cảnh báo đúng lúc:
 - Mở app mà thiếu FFmpeg / Whisper: hỏi có muốn cài ngay không.
-- Bấm **Tạo phụ đề** có dịch mà Claude chưa cài hoặc chưa đăng nhập: chọn cài / đăng nhập ngay, hoặc chạy
-  tiếp không dịch.
+- Bấm **Tạo phụ đề** có dịch mà trình dịch đang chọn (Claude hoặc Antigravity CLI) chưa cài hoặc chưa đăng
+  nhập: chọn cài / đăng nhập ngay, hoặc chạy tiếp không dịch.
 - Bật thuyết minh mà chưa có VieNeu: chọn cài ngay, hoặc chạy tiếp không thuyết minh.
 - Model chưa tải: báo trước lần chạy này sẽ tải bao nhiêu GB.
 
 Dòng lệnh: `uv run vsub doctor` in trạng thái và hướng dẫn. `uv run vsub doctor --install` cài các thứ còn
-thiếu (hỏi trước khi mở Terminal), hoặc ghi tên cụ thể: `--install claude vieneu`.
+thiếu (hỏi trước khi mở Terminal), hoặc ghi tên cụ thể: `--install claude vieneu`. Antigravity CLI chỉ cài
+khi ghi tên: `--install agy`.
 
 ## Dùng bằng giao diện
 
@@ -80,13 +82,18 @@ Double-click **`Vsub.app`** trong thư mục này (hoặc chạy `uv run vsub-gu
 1. **Kéo thả video hoặc cả thư mục** vào cửa sổ app, hoặc thả lên icon `Vsub.app` trong Finder/Dock. Cũng có thể bấm **Chọn video…**. Danh sách tự sắp theo tên: các tập
    cùng phim đứng liền nhau, đúng thứ tự tập (`ep.2` đứng trước `ep.10`)
 2. Chọn ngôn ngữ trong phim (để "Tự nhận diện" cũng được)
-3. Chọn **Dịch bằng Claude sang** (mặc định Tiếng Việt) hoặc "Không dịch"
+3. Chọn **Dịch sang** (mặc định Tiếng Việt) hoặc "Không dịch", và **Trình dịch**: Claude (mặc định) hoặc
+   Gemini (Antigravity CLI), kèm model
 4. Nếu muốn, mở tab **Thông tin phim** và điền cho từng phim (xem mục
    [Hồ sơ phim](#hồ-sơ-phim-phim-nhiều-tập)): nội dung phim, link liên quan, tệp đã dịch,
    xưng hô, tên riêng
 5. Bấm **▶ Tạo phụ đề**. Kết quả nằm cùng thư mục với video:
    - `tên-video.srt`: phụ đề theo ngôn ngữ gốc
-   - `tên-video.vi.srt`: bản dịch (IINA, VLC, Infuse tự nhận cả hai file)
+   - `tên-video.claude-sonnet.vi.srt`: bản dịch, tên có kèm model đã dịch (IINA, VLC, Infuse tự nhận cả
+     hai file; mã ngôn ngữ `vi` để cuối nên vẫn hiện là Tiếng Việt)
+6. Muốn dịch lại bằng model khác: đổi **Trình dịch** / model rồi bấm **🌐 Chỉ dịch**. App dịch lại
+   `tên-video.srt` đã có, không nhận dạng lại, và ghi ra file mới theo tên model, ví dụ
+   `tên-video.gemini-3.8-flash-high.vi.srt`, nên các bản dịch cũ vẫn còn để so sánh.
 
 Log ghi ở `~/Library/Logs/vsub.log`. Có thể kéo `Vsub.app` vào Dock hoặc Applications;
 nhưng đừng di chuyển hay đổi tên thư mục project (app gọi vào đó).
@@ -189,7 +196,8 @@ Chạy `claude` một lần trong Terminal để đăng nhập. App gọi `claud
 
 ```bash
 uv run vsub "phim.mp4" --lang ja --to vi                 # nhận dạng + dịch
-uv run vsub translate "phim.srt" --from ja --to vi       # dịch file .srt có sẵn
+uv run vsub translate "phim.srt" --from ja --to vi       # chỉ dịch file .srt có sẵn -> phim.claude-sonnet.vi.srt
+uv run vsub translate "phim.srt" --to vi --claude-model opus   # dịch lại bằng model khác -> phim.claude-opus.vi.srt
 uv run vsub translate "phim.srt" --to vi --glossary ten-rieng.txt --notes "phim học đường"
 uv run vsub translate "ep.3.srt" --to vi --link "https://ja.wikipedia.org/wiki/..."   # thêm link vào hồ sơ phim
 ```
@@ -214,6 +222,35 @@ Cách dịch giữ nguyên tên riêng và cách xưng hô:
 File tên riêng (`--glossary`): mỗi dòng `tên gốc = cách viết`, dòng bắt đầu `#` là ghi chú.
 Chọn model bằng `--claude-model sonnet|opus|haiku` (mặc định sonnet).
 
+## Dịch bằng Gemini (Antigravity CLI)
+
+Thay cho Claude, có thể dịch bằng Gemini qua [Antigravity CLI](https://antigravity.google/docs/cli) (`agy`),
+dùng tài khoản Google của bạn (gói miễn phí, Google AI Pro hoặc Ultra). Quy trình dịch giống hệt: bảng tên
+riêng, xưng hô, lô dịch, tốc độ đọc, hồ sơ phim.
+
+```bash
+curl -fsSL https://antigravity.google/cli/install.sh | bash   # Windows: irm https://antigravity.google/cli/install.ps1 | iex
+agy                                                           # đăng nhập một lần, xong gõ /exit
+uv run vsub "phim.mp4" --to vi --engine gemini
+uv run vsub translate "phim.srt" --to vi --engine gemini --gemini-model gemini-3.8-flash-high
+```
+
+Trong app: tab **Cài đặt** → **Trình dịch** → "Gemini (Antigravity CLI)". Tab **Thư viện** có nút cài và
+đăng nhập.
+
+Cần biết:
+- Gemini CLI cũ không còn chạy với tài khoản miễn phí và gói Google AI Pro/Ultra từ 18/06/2026. Google
+  chuyển sang Antigravity CLI, nên app dùng `agy`.
+- Quota tính theo tài khoản Google: gói miễn phí giới hạn theo tuần, Pro/Ultra làm mới mỗi 5 giờ. Một tập phim
+  tốn khoảng 15–20 lượt gọi (1 lượt đọc cả tập, các lô dịch, lượt rút gọn). Gói miễn phí có thể hết lượt
+  giữa chừng; khi đó app báo lỗi quota, câu chưa dịch giữ nguyên gốc.
+- Model: để "mặc định" thì dùng model đang chọn trong `agy`. Xem tên model bằng `agy models` (agy 1.5:
+  `gemini-3.8-flash-high|medium|low`, `gemini-4-argon-high|medium|low`, …). Gói miễn phí chỉ có Gemini Flash.
+- `agy` không có tuỳ chọn thay system prompt hay tắt tool như `claude -p`. App ghép luật dịch vào đầu tin
+  nhắn, chạy `agy` trong một thư mục trống, và dặn không dùng tool. Ở chế độ headless, `agy` tự từ chối mọi
+  thao tác cần xin phép. File `~/.gemini/GEMINI.md` (nếu bạn có) vẫn được `agy` nạp.
+- `agy` không báo giá tiền, nên log không in chi phí.
+
 ## Thuyết minh bằng VieNeu-TTS
 
 App dùng [VieNeu-TTS](https://github.com/pnnbao97/VieNeu-TTS) (chạy trên máy) để đọc bản dịch tiếng Việt
@@ -229,8 +266,8 @@ Thuyết minh là **tuỳ chọn, mặc định tắt**. Mỗi lần mở app đ
 - Tích "Bật thuyết minh bằng VieNeu", chọn **giọng đọc** (mặc định Trúc Ly) và **âm gốc khi đọc**
   (mặc định Tự động). App nhớ giọng và mức giảm cho lần sau. Thuyết minh chạy sau bước dịch, chỉ khi
   dịch sang Tiếng Việt.
-- Khi bật thì hiện thêm nút **🔊 Chỉ thuyết minh**: làm thuyết minh từ `tên-video.vi.srt` có sẵn, không
-  nhận dạng hay dịch lại.
+- Khi bật thì hiện thêm nút **🔊 Chỉ thuyết minh**: làm thuyết minh từ bản dịch tiếng Việt mới nhất
+  (`tên-video.….vi.srt`), không nhận dạng hay dịch lại.
 - Dòng lệnh cũng vậy: chỉ thuyết minh khi có `--dub` hoặc dùng lệnh `vsub dub`.
 
 Kết quả là `tên-video.thuyetminh.mp4`: hình chép nguyên (không encode lại), track âm 1 là **thuyết minh**
@@ -253,7 +290,7 @@ Một tập 45 phút (~600 câu) mất khoảng 5 phút trên M1 Max (VieNeu ch�
 
 ```bash
 uv run vsub "phim.mp4" --lang ja --to vi --dub             # nhận dạng + dịch + thuyết minh
-uv run vsub dub "phim.mp4"                                 # thuyết minh từ phim.vi.srt có sẵn
+uv run vsub dub "phim.mp4"                                 # thuyết minh từ bản phim.….vi.srt mới nhất
 uv run vsub dub "phim.mp4" --voice "Thiện Minh" --duck-db 15
 ```
 

@@ -10,7 +10,7 @@ from vsub import deps
 IS_WIN = sys.platform.startswith("win")
 
 
-@pytest.mark.parametrize("keys", [["ffmpeg"], ["whisper"], ["model"], ["sepmodel"], ["claude"], ["vieneu"],
+@pytest.mark.parametrize("keys", [["ffmpeg"], ["whisper"], ["model"], ["sepmodel"], ["claude"], ["agy"], ["vieneu"],
                                   ["ffmpeg", "whisper", "claude", "vieneu"]])
 def test_install_scripts_are_valid(keys, tmp_path):
     summary, script = deps.install_plan(keys)
@@ -94,3 +94,19 @@ def test_run_in_terminal_writes_script(tmp_path, monkeypatch):
     assert calls and path in calls[0]
     if not IS_WIN:
         assert os.access(path, os.X_OK)
+
+
+def test_check_agy_missing(monkeypatch):
+    monkeypatch.setattr("vsub.translate.find_agy", lambda: None)
+    d = deps.check_agy()
+    assert not d.ok and not d.required and d.action == "Cài đặt" and "antigravity.google/cli/install" in d.guide
+
+
+@pytest.mark.skipif(IS_WIN, reason="agy giả là script sh")
+def test_check_agy_installed(tmp_path, monkeypatch):
+    exe = tmp_path / "agy"
+    exe.write_text('#!/bin/sh\nif [ "$1" = "--version" ]; then echo "agy 1.2.3"; fi\n')
+    exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setattr("vsub.translate.find_agy", lambda: str(exe))
+    d = deps.check_agy()
+    assert d.ok and "1.2.3" in d.detail and d.action == "Đăng nhập"

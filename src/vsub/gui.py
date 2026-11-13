@@ -29,12 +29,12 @@ HAND = "pointinghand" if sys.platform == "darwin" else "hand2"
 ABOUT_TEXT = (
     "Tự động làm phụ đề cho phim, chạy ngay trên máy:\n"
     "•  Nhận dạng giọng nói bằng Whisper (GPU Apple Silicon)\n"
-    "•  Dịch bằng Claude, giữ tên riêng và xưng hô thống nhất giữa các tập\n"
+    "•  Dịch bằng Claude hoặc Gemini, giữ tên riêng và xưng hô thống nhất giữa các tập\n"
     "•  Tự né phụ đề in sẵn trong video\n"
     "•  Thuyết minh tiếng Việt bằng VieNeu-TTS"
 )
 CREDITS = ("Dùng: OpenAI Whisper (mlx-whisper, faster-whisper), Silero VAD, RapidOCR, "
-           "Claude Code, VieNeu-TTS, FFmpeg.")
+           "Claude Code, Antigravity CLI, VieNeu-TTS, FFmpeg. Icon: Font Awesome Free (CC BY 4.0).")
 
 
 def open_site() -> None:
@@ -66,6 +66,15 @@ TARGETS = [
     ("한국어", "ko"),
 ]
 CLAUDE_MODELS = ["sonnet", "opus", "haiku"]
+# trình dịch: (tên hiện, khoá engine, khoá thành phần ở tab Thư viện)
+ENGINES = [("Claude (Claude Code)", "claude", "claude"), ("Gemini (Antigravity CLI)", "gemini", "agy")]
+DEFAULT_MODEL = "mặc định"  # Gemini: dùng model đang chọn trong agy
+ENGINE_MODELS = {
+    "claude": CLAUDE_MODELS,
+    # tên theo `agy models` (agy 1.5): gói miễn phí chỉ có Flash, Argon cần Google AI Pro/Ultra
+    "gemini": [DEFAULT_MODEL, "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-4-argon-medium",
+               "gemini-4-argon-high"],
+}
 POSITIONS = [
     ("Tự động (né phụ đề có sẵn trong video)", "auto"),
     ("Luôn ở dưới", "bottom"),
@@ -121,7 +130,7 @@ SEPARATE_HINT = (
 READ_OPTIONS = [
     ("read_links", "Đọc các link trong tab “Thông tin phim”"),
     ("read_prev", "Đọc lại phụ đề đã dịch của các tập khác (cùng thư mục / “Tệp đã dịch”)"),
-    ("use_profile", "Dùng hồ sơ phim: tên riêng, xưng hô, tóm tắt các tập trước mà Claude đã học"),
+    ("use_profile", "Dùng hồ sơ phim: tên riêng, xưng hô, tóm tắt các tập trước đã học được"),
     ("learn", "Ghi những gì học được ở tập này vào hồ sơ phim (cho các tập sau)"),
 ]
 
@@ -315,18 +324,28 @@ class App:
             opts, foreground="gray", text=SEPARATE_HINT,
         ).grid(row=4, column=1, columnspan=2, sticky="w", padx=8)
         ttk.Separator(opts).grid(row=6, column=0, columnspan=3, sticky="ew", pady=8)
-        ttk.Label(opts, text="Dịch bằng Claude sang:").grid(row=7, column=0, sticky="w", pady=3)
+        ttk.Label(opts, text="Dịch sang:").grid(row=7, column=0, sticky="w", pady=3)
         self.target = ttk.Combobox(opts, state="readonly", width=34, values=[n for n, _ in TARGETS])
         self.target.current(1)
         self.target.grid(row=7, column=1, sticky="w", padx=8)
-        self.claude_model = ttk.Combobox(opts, state="readonly", width=8, values=CLAUDE_MODELS)
-        self.claude_model.current(0)
-        self.claude_model.grid(row=7, column=2, sticky="w")
+        ttk.Label(opts, text="Trình dịch:").grid(row=8, column=0, sticky="w", pady=3)
+        eng_row = ttk.Frame(opts)
+        eng_row.grid(row=8, column=1, columnspan=2, sticky="w", padx=8)
+        self.engine = ttk.Combobox(eng_row, state="readonly", width=34, values=[n for n, _, _ in ENGINES])
+        keys = [k for _, k, _ in ENGINES]
+        self.engine.current(keys.index(load_settings().get("engine")) if load_settings().get("engine") in keys else 0)
+        self.engine.pack(side="left")
+        self.claude_model = ttk.Combobox(eng_row, state="readonly", width=22)  # model của trình dịch đang chọn
+        self.claude_model.pack(side="left", padx=(8, 0))
+        self.engine.bind("<<ComboboxSelected>>", lambda _e: self.on_engine(save=True))
+        self.claude_model.bind("<<ComboboxSelected>>", lambda _e: save_settings(
+            {**load_settings(), f"model_{self.engine_key()}": self.claude_model.get()}))
+        self.on_engine()
         ttk.Label(
             opts, foreground="gray",
             text="Nội dung phim, link, xưng hô, tên riêng: điền ở tab “Thông tin phim”.",
-        ).grid(row=8, column=1, columnspan=2, sticky="w", padx=8)
-        ttk.Label(opts, text="Claude đọc thêm:").grid(row=9, column=0, sticky="nw", pady=(8, 3))
+        ).grid(row=9, column=1, columnspan=2, sticky="w", padx=8)
+        ttk.Label(opts, text="Đọc thêm khi dịch:").grid(row=10, column=0, sticky="nw", pady=(8, 3))
         saved = load_settings().get("read_options", {})
         self.read_vars: dict[str, tk.BooleanVar] = {}
         self.read_checks = []
@@ -336,17 +355,17 @@ class App:
                 {**load_settings(), "read_options": {k: v.get() for k, v in self.read_vars.items()}}))
             self.read_vars[key] = var
             cb = ttk.Checkbutton(opts, text=label, variable=var)
-            cb.grid(row=9 + i, column=1, columnspan=2, sticky="w", padx=8, pady=(8 if i == 0 else 0, 0))
+            cb.grid(row=10 + i, column=1, columnspan=2, sticky="w", padx=8, pady=(8 if i == 0 else 0, 0))
             self.read_checks.append(cb)
         ttk.Label(
             opts, foreground="gray",
             text="Tắt hết: mỗi tập dịch độc lập. Nội dung / xưng hô / tên riêng bạn tự điền luôn được dùng.",
-        ).grid(row=9 + len(READ_OPTIONS), column=1, columnspan=2, sticky="w", padx=8)
+        ).grid(row=10 + len(READ_OPTIONS), column=1, columnspan=2, sticky="w", padx=8)
 
         # --- thuyết minh bằng VieNeu-TTS
         from .dub import DEFAULT_VOICE, VOICES
 
-        r0 = 10 + len(READ_OPTIONS)
+        r0 = 11 + len(READ_OPTIONS)
         ttk.Separator(opts).grid(row=r0, column=0, columnspan=3, sticky="ew", pady=8)
         st = load_settings()
         ttk.Label(opts, text="Thuyết minh:").grid(row=r0 + 1, column=0, sticky="w", pady=3)
@@ -448,13 +467,15 @@ class App:
         # --- nút
         act = ttk.Frame(frm)
         act.pack(fill="x", pady=(12, 8))
-        self.start_btn = ttk.Button(act, text="▶  Tạo phụ đề", command=self.start)
+        self.start_btn = self._button(act, "play", "Tạo phụ đề", self.start)
         self.start_btn.pack(side="left")
-        self.stop_btn = ttk.Button(act, text="Dừng", command=self.stop, state="disabled")
+        self.tr_btn = self._button(act, "language", "Chỉ dịch", self.start_translate)
+        self.tr_btn.pack(side="left", padx=(8, 0))
+        self.stop_btn = self._button(act, "stop", "Dừng", self.stop, state="disabled")
         self.stop_btn.pack(side="left", padx=8)
         # chỉ hiện khi bật thuyết minh (xem sync_dub)
-        self.dub_btn = ttk.Button(act, text="🔊  Chỉ thuyết minh", command=self.start_dub)
-        self.open_btn = ttk.Button(act, text="Mở thư mục", command=self.reveal, state="disabled")
+        self.dub_btn = self._button(act, "volume", "Chỉ thuyết minh", self.start_dub)
+        self.open_btn = self._button(act, "folder", "Mở thư mục", self.reveal, state="disabled")
         self.open_btn.pack(side="right")
 
         self.sync_dub()
@@ -466,7 +487,6 @@ class App:
         self.bar.pack(fill="x", pady=6)
 
         # --- footer (pack trước khung log để luôn còn chỗ ở đáy cửa sổ)
-        self._imgs: dict[str, tk.PhotoImage] = {}
         foot = ttk.Frame(frm)
         foot.pack(side="bottom", fill="x", pady=(8, 0))
         logo = self._img("viennv-20.png")
@@ -668,27 +688,18 @@ class App:
             self.pick()
             if not self.files:
                 return
-        from .deps import check_claude, check_vieneu
+        from .deps import check_vieneu
 
         if not self.ensure_required():
             return
         target = TARGETS[self.target.current()][1]
+        engine = self.engine_key()
         if target:
-            d = check_claude()
-            if not d.ok:
-                ans = messagebox.askyesnocancel(
-                    "Claude chưa sẵn sàng",
-                    f"{d.detail}. Claude CLI cần để dịch phụ đề.\n\n"
-                    f"Có: {(d.action or 'cài đặt').lower()} ngay (mở Terminal).\n"
-                    "Không: vẫn tạo phụ đề nhưng lần này không dịch.\nHuỷ: thôi.",
-                )
-                if ans is None:
-                    return
-                if ans:
-                    self.install(["claude"])
-                    return
+            ok = self.ensure_translator(allow_skip=True)
+            if ok is None:
+                return
+            if not ok:
                 target = None
-                self.write("⚠ Lần này không dịch (Claude CLI chưa sẵn sàng).")
         dub = self.dub_settings() if self.dub_var.get() and target == "vi" else None
         if self.dub_var.get() and target != "vi":
             self.write("⚠ Thuyết minh chỉ chạy khi dịch sang Tiếng Việt — lần này bỏ qua thuyết minh.")
@@ -719,7 +730,7 @@ class App:
         lang = LANGS[self.lang.current()][1]
         model = MODELS[self.model.current()][1]
         flags = {k: v.get() for k, v in self.read_vars.items()}
-        tr = (target, self.claude_model.get(), flags, dub) if target else None
+        tr = (target, engine, self.translator_model(), flags, dub) if target else None
         pos = POSITIONS[self.position.current()][1]
         if tr:
             for g in self.groups:
@@ -835,8 +846,8 @@ class App:
             self._bold = tkfont.Font(**{**tkfont.nametofont("TkDefaultFont").actual(), "weight": "bold"})
         for i, d in enumerate(deps):
             r = 2 * i
-            icon = "✅" if d.ok else ("❌" if d.required else "⚠️")
-            ttk.Label(self.deps_rows, text=icon).grid(row=r, column=0, rowspan=2, sticky="n", padx=(0, 8), pady=(8, 0))
+            icon = self._img("fa-ok.png" if d.ok else ("fa-missing.png" if d.required else "fa-warn.png"))
+            ttk.Label(self.deps_rows, image=icon).grid(row=r, column=0, rowspan=2, sticky="n", padx=(0, 8), pady=(8, 0))
             ttk.Label(self.deps_rows, text=d.name, font=self._bold).grid(row=r, column=1, sticky="w", pady=(8, 0))
             ttk.Label(self.deps_rows, text=f"{d.need} · {d.purpose}", foreground="gray").grid(
                 row=r, column=2, sticky="w", padx=10, pady=(8, 0))
@@ -851,8 +862,9 @@ class App:
         missing = [d for d in deps if not d.ok and d.key not in ("model", "sepmodel")]  # 2 model này tự tải
         self.deps_lbl.config(text=f"Kiểm tra lúc {time.strftime('%H:%M')}"
                                   + (f" — thiếu {len(missing)} thành phần" if missing else " — đủ cả"))
-        warn = any(not d.ok and (d.required or d.key == "claude") for d in deps)
-        self.nb.tab(self.deps_tab, text="Thư viện ⚠" if warn else "Thư viện")
+        warn = any(not d.ok and (d.required or d.key == self.engine_dep()) for d in deps)
+        self.nb.tab(self.deps_tab, text="Thư viện", image=self._img("fa-warn-sm.png") if warn else "",
+                    compound="right")
         for k in list(self._awaiting):  # vừa cài xong?
             if k in self.deps and self.deps[k].ok:
                 self._awaiting.discard(k)
@@ -861,7 +873,7 @@ class App:
         if self._deps_first and deps:
             self._deps_first = False
             for d in missing:  # VieNeu chỉ cần khi bật thuyết minh (mặc định tắt) -> không nhắc lúc mở app
-                if d.required or d.key == "claude":
+                if d.required or d.key == self.engine_dep():
                     self.write(f"⚠ {d.name} ({d.need.lower()}): {d.detail} — xem tab “Thư viện”")
             req = [d for d in deps if d.required and not d.ok]
             if req and not self.running and messagebox.askyesno(
@@ -897,10 +909,83 @@ class App:
                        command=lambda: (w.destroy(), self.install([d.key]))).pack(side="left")
         w.bind("<Escape>", lambda _e: w.destroy())
 
+    def ensure_translator(self, allow_skip: bool = False) -> bool | None:
+        """Claude / agy (theo trình dịch đang chọn) chưa sẵn sàng -> đề nghị cài / đăng nhập.
+        True: dịch được. False: lần này không dịch (chỉ khi allow_skip). None: thôi, không chạy."""
+        from .deps import check_agy, check_claude
+
+        dep_key = self.engine_dep()
+        d = check_agy() if dep_key == "agy" else check_claude()
+        if d.ok:
+            return True
+        msg = (f"{d.detail}. {d.name} cần để dịch phụ đề.\n\n"
+               f"Có: {(d.action or 'cài đặt').lower()} ngay (mở Terminal).\n")
+        if allow_skip:
+            ans = messagebox.askyesnocancel(
+                f"{d.name} chưa sẵn sàng", msg + "Không: vẫn tạo phụ đề nhưng lần này không dịch.\nHuỷ: thôi.")
+        else:
+            ans = messagebox.askyesno(f"{d.name} chưa sẵn sàng", msg + "Không: thôi.") or None
+        if ans is None:
+            return None
+        if ans:
+            self.install([dep_key])
+            return None
+        self.write(f"⚠ Lần này không dịch ({d.name} chưa sẵn sàng).")
+        return False
+
+    def translator_model(self) -> str:
+        """Model của trình dịch đang chọn ("" = model mặc định của agy) — khác model Whisper."""
+        m = self.claude_model.get()
+        return "" if m == DEFAULT_MODEL else m
+
+    def start_translate(self) -> None:
+        """Chỉ dịch lại <tên>.srt đã nhận dạng (không chạy Whisper lại) bằng trình dịch / model đang chọn.
+        Mỗi model ra một file riêng: <tên>.claude-opus.vi.srt, <tên>.gemini-….vi.srt…"""
+        from .series import series_key
+        from .translate import model_tag, translated_path
+
+        if not self.files:
+            self.pick()
+            if not self.files:
+                return
+        target = TARGETS[self.target.current()][1]
+        if not target:
+            messagebox.showwarning("Chưa chọn ngôn ngữ dịch",
+                                   "Chọn ngôn ngữ ở ô “Dịch sang” rồi bấm “Chỉ dịch”.")
+            return
+        ready = [f for f in self.files if os.path.exists(srt_path(f))]
+        if not ready:
+            messagebox.showwarning("Chưa có phụ đề gốc",
+                                   "Chưa video nào có phụ đề gốc (<tên>.srt). Bấm “Tạo phụ đề” trước — "
+                                   "lần sau đổi model thì chỉ cần “Chỉ dịch”.")
+            return
+        if not self.ensure_translator():
+            return
+        engine, tr_model = self.engine_key(), self.translator_model()
+        tag = model_tag(engine, tr_model)
+        exist = [f for f in ready if os.path.exists(translated_path(srt_path(f), target, tag))]
+        if exist and not messagebox.askyesno(
+            "Ghi đè?", f"Đã có {len(exist)} bản dịch bằng {tag}. Dịch lại và ghi đè?"
+        ):
+            return
+        for f in self.files:
+            if f not in ready:
+                self.write(f"⏭ {os.path.basename(f)}: chưa có phụ đề gốc .srt — bỏ qua")
+        self.save_fields()
+        flags = {k: v.get() for k, v in self.read_vars.items()}
+        jobs = [(f, self.profiles[series_key(f)]) for f in ready]
+        self.cancel.clear()
+        self.errors.clear()
+        self.set_running(True)
+        self.worker = threading.Thread(
+            target=self.work_translate,
+            args=(jobs, LANGS[self.lang.current()][1], (target, engine, tr_model, flags, None)), daemon=True)
+        self.worker.start()
+
     def start_dub(self) -> None:
-        """Thuyết minh từ <tên>.vi.srt có sẵn, không nhận dạng / dịch lại."""
+        """Thuyết minh từ bản <tên>.*.vi.srt mới nhất, không nhận dạng / dịch lại."""
         from .dub import output_path
-        from .translate import translated_path
+        from .translate import latest_translation
 
         if not self.files:
             self.pick()
@@ -908,11 +993,11 @@ class App:
                 return
         if not self.ensure_required():
             return
-        ready = [f for f in self.files if os.path.exists(translated_path(srt_path(f), "vi"))]
+        ready = [f for f in self.files if latest_translation(srt_path(f), "vi")]
         missing = [f for f in self.files if f not in ready]
         if not ready:
             messagebox.showwarning("Chưa có bản dịch",
-                                   "Chưa video nào có phụ đề tiếng Việt (<tên>.vi.srt). Hãy tạo phụ đề và dịch "
+                                   "Chưa video nào có phụ đề tiếng Việt (<tên>.….vi.srt). Hãy tạo phụ đề và dịch "
                                    "sang Tiếng Việt trước, hoặc bật “Thuyết minh” rồi bấm “Tạo phụ đề”.")
             return
         if not self.ensure_vieneu():
@@ -933,6 +1018,25 @@ class App:
         self.cancel.set()
         self.stage.config(text="Đang dừng sau đoạn hiện tại…")
 
+    def engine_key(self) -> str:
+        """Trình dịch đang chọn: "claude" hoặc "gemini"."""
+        w = getattr(self, "engine", None)
+        return ENGINES[w.current()][1] if w is not None and w.current() >= 0 else "claude"
+
+    def engine_dep(self) -> str:
+        """Khoá thành phần ở tab Thư viện của trình dịch đang chọn ("claude" / "agy")."""
+        return {k: d for _, k, d in ENGINES}[self.engine_key()]
+
+    def on_engine(self, save: bool = False) -> None:
+        """Đổi trình dịch: nạp danh sách model của nó, chọn lại model đã dùng lần trước."""
+        key = self.engine_key()
+        models = ENGINE_MODELS[key]
+        last = load_settings().get(f"model_{key}")
+        self.claude_model.config(values=models)
+        self.claude_model.current(models.index(last) if last in models else 0)
+        if save:
+            save_settings({**load_settings(), "engine": key})
+
     def sync_dub(self) -> None:
         """Thuyết minh tắt: khoá ô giọng / mức giảm và ẩn nút "Chỉ thuyết minh"."""
         on, busy = self.dub_var.get(), self.running
@@ -940,7 +1044,7 @@ class App:
             w.config(state="readonly" if on and not busy else "disabled")
         self.dub_check.config(state="disabled" if busy else "normal")
         if on and not self.dub_btn.winfo_manager():
-            self.dub_btn.pack(side="left", after=self.start_btn, padx=(8, 0))
+            self.dub_btn.pack(side="left", after=self.tr_btn, padx=(8, 0))
         elif not on and self.dub_btn.winfo_manager():
             self.dub_btn.pack_forget()
         self.dub_btn.config(state="disabled" if busy else "normal")
@@ -948,8 +1052,9 @@ class App:
     def set_running(self, running: bool) -> None:
         self.running = running
         self.start_btn.config(state="disabled" if running else "normal")
+        self.tr_btn.config(state="disabled" if running else "normal")
         self.stop_btn.config(state="normal" if running else "disabled")
-        for w in (self.lang, self.model, self.position, self.target, self.claude_model, self.film):
+        for w in (self.lang, self.model, self.position, self.target, self.engine, self.claude_model, self.film):
             w.config(state="disabled" if running else "readonly")
         self.sync_dub()
         # hồ sơ đang được luồng nền ghi -> khoá các ô cho tới khi chạy xong
@@ -1025,8 +1130,8 @@ class App:
                 write_subs(cues, out, position)
                 self.emit("done", name, out, len(cues), t.language, time.time() - started)
                 if tr and tr[0] != t.language and cues:
-                    target, claude_model, flags, dub = tr
-                    vi_srt = self.translate_file(path, cues, t.language, target, claude_model, profile,
+                    target, engine, tr_model, flags, dub = tr
+                    vi_srt = self.translate_file(path, cues, t.language, target, engine, tr_model, profile,
                                                  position=position, flags=flags)
                     if dub:
                         self.dub_file(path, vi_srt, *dub)
@@ -1041,7 +1146,7 @@ class App:
         self.emit("finished")
 
     def work_dub(self, files: list[str], voice: str, duck: float | None) -> None:
-        from .translate import translated_path
+        from .translate import latest_translation
 
         for idx, path in enumerate(files):
             name = os.path.basename(path)
@@ -1051,7 +1156,12 @@ class App:
                 self.emit("log", "  ⏭ Cửa sổ khác đang làm video này — bỏ qua")
                 continue
             try:
-                self.dub_file(path, translated_path(srt_path(path), "vi"), voice, duck)
+                subs = latest_translation(srt_path(path), "vi")
+                if not subs:
+                    self.emit("log", "  ⏭ Chưa có bản dịch tiếng Việt — bỏ qua")
+                    continue
+                self.emit("log", f"  Dùng bản dịch {os.path.basename(subs)}")
+                self.dub_file(path, subs, voice, duck)
             except Cancelled:
                 self.emit("cancelled")
                 return
@@ -1061,6 +1171,56 @@ class App:
             finally:
                 release_video(lock)
         self.emit("finished")
+
+    def work_translate(self, jobs: list, lang, tr) -> None:
+        """Chỉ dịch: đọc <tên>.srt có sẵn rồi dịch, không nạp Whisper."""
+        from .formats import parse_srt, srt_position
+
+        target, engine, tr_model, flags, _dub = tr
+        for idx, (path, profile) in enumerate(jobs):
+            name = os.path.basename(path)
+            self.emit("file", idx, len(jobs), name)
+            lock = claim_video(path)
+            if lock is None:
+                self.emit("log", "  ⏭ Cửa sổ khác đang làm video này — bỏ qua")
+                continue
+            try:
+                src = srt_path(path)
+                with open(src, encoding="utf-8") as f:
+                    raw = f.read()
+                cues = parse_srt(raw)
+                source = self.source_lang(path, profile, lang)
+                self.emit("log", f"  Dùng phụ đề gốc có sẵn {os.path.basename(src)} — {len(cues)} câu"
+                                 + (f", ngôn ngữ {source}" if source else ""))
+                if not cues:
+                    self.emit("log", "  ⏭ Phụ đề gốc trống — bỏ qua")
+                elif source == target:
+                    self.emit("log", f"  ⏭ Phụ đề gốc đã là {target} — bỏ qua")
+                else:
+                    self.translate_file(path, cues, source, target, engine, tr_model, profile,
+                                        position=srt_position(raw), flags=flags)
+            except Cancelled:
+                self.emit("cancelled")
+                return
+            except Exception as e:  # noqa: BLE001
+                traceback.print_exc()
+                self.emit("error", name, str(e) or e.__class__.__name__)
+            finally:
+                release_video(lock)
+        self.emit("finished")
+
+    @staticmethod
+    def source_lang(path: str, profile, lang: str | None) -> str | None:
+        """Ngôn ngữ của phụ đề gốc: ô “Ngôn ngữ gốc” > hồ sơ phim > bản nhận dạng đã lưu."""
+        if lang or profile.source_lang:
+            return lang or profile.source_lang
+        from .pipeline import Transcript
+
+        try:
+            stem = os.path.splitext(os.path.basename(path))[0]
+            return Transcript.load(os.path.join(_cache_dir(), stem + ".transcript.json")).language or None
+        except (OSError, ValueError, TypeError, KeyError):
+            return None
 
     def dub_file(self, path: str, subs: str, voice: str, duck: float | None) -> None:
         """Thuyết minh một video từ file phụ đề tiếng Việt."""
@@ -1097,26 +1257,26 @@ class App:
         except OSError:
             pass
 
-    def translate_file(self, path, cues, source, target, claude_model, profile, position="bottom",
+    def translate_file(self, path, cues, source, target, engine, tr_model, profile, position="bottom",
                        flags: dict | None = None) -> str:
         """Nạp dồn những gì hồ sơ chưa có (link, bản dịch các tập khác cùng phim), dịch, rồi ghi
         lại vào hồ sơ những gì học được ở tập này để tập sau dùng tiếp."""
         from .formats import write_subs
         from .series import episode_of, prepare, remember, series_key
         from .translate import Cancelled as TCancelled
-        from .translate import ClaudeRunner, parse_glossary_text, translate_cues, translated_path
+        from .translate import make_runner, model_tag, parse_glossary_text, runner_name, translate_cues, translated_path
 
         flags = flags or {}
-        self.emit("tstart", target)
+        runner = make_runner(engine, tr_model)
+        self.emit("tstart", target, runner_name(runner))
         started = time.time()
         if flags.get("use_profile"):
             try:
                 profile.reload()  # lấy thêm tên riêng / xưng hô mà cửa sổ khác vừa học
             except (OSError, ValueError):
                 pass
-        out = translated_path(srt_path(path), target)
+        out = translated_path(srt_path(path), target, model_tag(engine, tr_model))
         episode = episode_of(path)
-        runner = ClaudeRunner(model=claude_model)
         say = lambda m: self.emit("stage", m)  # noqa: E731
         try:
             kinds = tuple(k for k, on in (("link", flags.get("read_links")),
@@ -1183,18 +1343,21 @@ class App:
             self.write(a[0])
         elif kind == "tstart":
             self.bar.config(value=0)
-            self.write(f"  → Dịch sang {a[0]} bằng Claude")
+            self._tr_name = a[1]
+            self.write(f"  → Dịch sang {a[0]} bằng {a[1]}")
         elif kind == "tprogress":
             d, n = a
             self.bar.config(value=100 * d / n)
-            self.stage.config(text=f"Claude đang dịch: lô {d}/{n}")
+            self.stage.config(text=f"{getattr(self, '_tr_name', 'Claude')} đang dịch: lô {d}/{n}")
         elif kind == "tdone":
             out, n, missing, cost, secs, splits = a
             self.last_out = out
             self.bar.config(value=100)
+            self.open_btn.config(state="normal")
             miss = f", {missing} câu giữ nguyên gốc" if missing else ""
             miss += f", tách {splits} câu gộp" if splits else ""
-            self.write(f"✔ Xong bản dịch {os.path.basename(out)} — {n} câu{miss}, {_fmt(secs)}, ~${cost:.2f}")
+            self.write(f"✔ Xong bản dịch {os.path.basename(out)} — {n} câu{miss}, {_fmt(secs)}"
+                       + (f", ~${cost:.2f}" if cost else ""))
         elif kind == "ucheck":
             self.on_update_checked(*a)
         elif kind == "uprogress":
@@ -1243,14 +1406,24 @@ class App:
         self.log.see("end")
         self.log.config(state="disabled")
 
-    # ---------- footer / giới thiệu
+    # ---------- ảnh, icon (Font Awesome vẽ sẵn: scripts/make_fa_icons.py)
     def _img(self, name: str) -> tk.PhotoImage | None:
+        if not hasattr(self, "_imgs"):
+            self._imgs: dict[str, tk.PhotoImage] = {}
         if name not in self._imgs:
             try:
                 self._imgs[name] = tk.PhotoImage(master=self.root, file=os.path.join(ASSETS, name))
             except tk.TclError:
                 return None
         return self._imgs[name]
+
+    def _button(self, parent, icon: str, text: str, command, **kw) -> ttk.Button:
+        """Nút có icon Font Awesome bên trái chữ; nút bị khoá thì icon xám."""
+        on, off = self._img(f"fa-{icon}.png"), self._img(f"fa-{icon}-off.png")
+        if on is None:
+            return ttk.Button(parent, text=text, command=command, **kw)
+        image = (on, "disabled", off) if off is not None else on
+        return ttk.Button(parent, text=" " + text, image=image, compound="left", command=command, **kw)
 
     def _link(self, parent, text: str, action, bold: bool = False) -> ttk.Label:
         """Chữ bấm được (như link web): màu xanh, gạch chân khi rê chuột."""

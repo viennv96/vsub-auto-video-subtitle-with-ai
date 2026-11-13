@@ -196,6 +196,29 @@ def check_claude() -> Dep:
                f"{ver} — đã đăng nhập" if logged else f"{ver} (không hỏi được trạng thái đăng nhập)", None, guide)
 
 
+AGY_PURPOSE = "Dịch bằng Gemini thay cho Claude (tài khoản Google)"
+
+
+def check_agy() -> Dep:
+    """Antigravity CLI (agy) — trình dịch thay thế. Không hỏi được trạng thái đăng nhập (token nằm
+    trong keychain của máy), nên chỉ kiểm đã cài chưa."""
+    from .translate import find_agy
+
+    exe = find_agy()
+    guide = ("Cài Antigravity CLI (https://antigravity.google/docs/cli), chạy trong "
+             + ("PowerShell:\n  irm https://antigravity.google/cli/install.ps1 | iex\n" if IS_WIN
+                else "Terminal:\n  curl -fsSL https://antigravity.google/cli/install.sh | bash\n")
+             + "rồi chạy agy một lần để đăng nhập tài khoản Google (gõ /exit để thoát).\n"
+             "Chọn “Gemini” ở mục Trình dịch trong tab Cài đặt.")
+    if not exe:
+        return Dep("agy", "Antigravity CLI", "Tuỳ chọn", AGY_PURPOSE, False,
+                   "Chưa cài — chỉ cần khi dịch bằng Gemini", "Cài đặt", guide)
+    r = _run([exe, "--version"], 10)
+    ver = (r.stdout.strip().split() or [""])[-1] if r and r.returncode == 0 else ""
+    return Dep("agy", "Antigravity CLI", "Tuỳ chọn", AGY_PURPOSE, True,
+               (f"{ver} — " if ver else "") + "đã cài (đăng nhập một lần bằng lệnh agy)", "Đăng nhập", guide)
+
+
 def check_vieneu() -> Dep:
     from .dub import find_vieneu_python
 
@@ -213,7 +236,8 @@ def check_vieneu() -> Dep:
 
 
 def check_all(model: str = "large-v3-turbo") -> list[Dep]:
-    return [check_ffmpeg(), check_whisper(), check_model(model), check_sep_model(), check_claude(), check_vieneu()]
+    return [check_ffmpeg(), check_whisper(), check_model(model), check_sep_model(), check_claude(), check_agy(),
+            check_vieneu()]
 
 
 # ------------------------------------------------------------------ cài đặt
@@ -306,6 +330,23 @@ def _plan(key: str, model: str) -> tuple[str, list[tuple[str, str]]]:
         steps += [("say", "Đăng nhập tài khoản Claude (trình duyệt sẽ mở)…"),
                   ("run", _call(exe or exe_after, "auth", "login"))]
         summary = ("Cài Claude Code bằng bộ cài chính thức (claude.ai), rồi " if not exe else "") + "claude auth login"
+    elif key == "agy":
+        from .translate import find_agy
+
+        exe = find_agy()
+        if not exe:
+            home = os.path.expanduser("~")
+            if IS_WIN:
+                steps.append(("run", "irm https://antigravity.google/cli/install.ps1 | iex"))
+                local = os.environ.get("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")
+                exe_after = os.path.join(local, "agy", "bin", "agy.exe")
+            else:
+                steps.append(("run", "curl -fsSL https://antigravity.google/cli/install.sh | bash"))
+                exe_after = os.path.join(home, ".local", "bin", "agy")
+        steps += [("say", "Đăng nhập tài khoản Google trong agy (trình duyệt sẽ mở). Xong gõ /exit để thoát."),
+                  ("run", _call(exe or exe_after))]
+        summary = ("Cài Antigravity CLI bằng bộ cài chính thức (antigravity.google), rồi " if not exe else "") \
+            + "đăng nhập bằng lệnh agy"
     elif key == "vieneu":
         from .dub import WORKER
 

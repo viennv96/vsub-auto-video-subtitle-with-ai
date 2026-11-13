@@ -176,3 +176,156 @@ def test_reading_speed_check_can_be_disabled(fake_claude, monkeypatch, tmp_path)
     assert all("max_chars" not in l for l in sent)
     assert not (tmp_path / "state.shorten").exists() and res.shortened == 0
     assert [c.end for c in res.cues] == [1.0, 2.1]
+
+
+# ------------------------------------------------------------------ Gemini qua Antigravity CLI (agy)
+
+FAKE_AGY = r'''#!{py}
+# agy giả: đọc 1 tin nhắn stream-json, tách luật / dữ liệu rồi nhờ claude giả trả lời
+import json, os, subprocess, sys
+sys.stdin.reconfigure(encoding="utf-8"); sys.stdout.reconfigure(encoding="utf-8")
+args = sys.argv[1:]
+assert args[args.index("--input-format") + 1] == "stream-json"
+assert args[args.index("--output-format") + 1] == "stream-json"
+assert "-p" not in args  # chế độ stream-json bỏ qua prompt trên dòng lệnh
+open(os.environ["FAKE_STATE"] + ".agy", "a", encoding="utf-8").write(json.dumps(args) + "\n")
+ev = json.loads(sys.stdin.readline())
+assert ev["event"] == "user"
+msg = ev["message"]["content"]
+mode = os.environ.get("FAKE_MODE", "ok")
+if mode == "noauth":
+    print("Error: authentication required", file=sys.stderr)
+    sys.exit(1)
+if mode == "tool":
+    print(json.dumps({{"event": "result", "result": {{"status": "SUCCESS", "response": "",
+                     "denied_actions": [{{"action": "command", "display_name": "RunCommand"}}]}}}}))
+    sys.exit(0)
+if mode == "quota":
+    print(json.dumps({{"event": "result", "result": {{"status": "ERROR", "response": "",
+                     "error": "RESOURCE_EXHAUSTED: weekly limit reached"}}}}))
+    sys.exit(1)
+assert "Do not use any tools" in msg
+system = msg.split("\n\nYou are used as a plain text-in/text-out function.")[0]
+payload = msg.split("<input>\n", 1)[1].split("\n</input>", 1)[0]
+p = subprocess.run([sys.executable, os.environ["FAKE_CLAUDE"], "-p", "--tools", "", "--no-session-persistence",
+                    "--system-prompt", system, "instr"], input=payload, capture_output=True, text=True,
+                   encoding="utf-8")
+res = json.loads(p.stdout)
+print(json.dumps({{"event": "message", "text": "..."}}))
+print(json.dumps({{"event": "result", "result": {{"conversation_id": "c1", "status": "SUCCESS",
+                 "response": res["result"], "usage": {{"total_tokens": 100}}}}}}, ensure_ascii=False))
+'''
+
+
+@pytest.fixture
+def fake_agy(tmp_path, monkeypatch, fake_claude):
+    exe = tmp_path / "agy.py"
+    exe.write_text(FAKE_AGY.format(py=sys.executable), encoding="utf-8")
+    exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("FAKE_CLAUDE", fake_claude)
+    return str(exe)
+
+
+def test_translate_with_gemini_agy(fake_agy, tmp_path):
+    from vsub.translate import AgyRunner
+
+    cues = [Cue(i, i + 1, [f"田中さん、こんにちは {i}"]) for i in range(5)]
+    runner = AgyRunner(exe=fake_agy, model="gemini-3.8-flash-high")
+    msgs = []
+    res = translate_cues(cues, "vi", "ja", runner, batch_size=3, status=msgs.append)
+    assert res.missing == 0
+    assert all(c.text.startswith("VI: Tanaka") for c in res.cues)
+    assert res.glossary["田中"] == "Tanaka"
+    assert res.cost_usd == 0 and runner.total_tokens > 0
+    assert any(m.startswith("Gemini đang dịch") for m in msgs)
+    calls = [json.loads(l) for l in (tmp_path / "state.agy").read_text(encoding="utf-8").splitlines()]
+    assert all(c[c.index("--model") + 1] == "gemini-3.8-flash-high" for c in calls)
+
+
+def test_agy_default_model_passes_no_flag(fake_agy, tmp_path):
+    from vsub.translate import AgyRunner
+
+    AgyRunner(exe=fake_agy).ask("Rules about terminology.", "Do it.", "{}")
+    args = json.loads((tmp_path / "state.agy").read_text(encoding="utf-8").splitlines()[0])
+    assert "--model" not in args
+
+
+def test_agy_not_logged_in_stops(fake_agy, monkeypatch):
+    from vsub.translate import AgyRunner
+
+    monkeypatch.setenv("FAKE_MODE", "noauth")
+    with pytest.raises(ClaudeError, match="login"):
+        translate_cues([Cue(0, 1, ["a"])], "vi", runner=AgyRunner(exe=fake_agy))
+
+
+def test_agy_quota_error_is_explained(fake_agy, monkeypatch):
+    from vsub.translate import AgyRunner
+
+    monkeypatch.setenv("FAKE_MODE", "quota")
+    with pytest.raises(ClaudeError, match="quota"):
+        AgyRunner(exe=fake_agy).ask("s", "i", "{}")
+
+
+def test_make_runner(fake_claude, monkeypatch):
+    from vsub.translate import AgyRunner, make_runner
+
+    monkeypatch.setattr("vsub.translate.find_agy", lambda: None)
+    with pytest.raises(ClaudeError, match="Antigravity"):
+        make_runner("gemini")
+    monkeypatch.setattr("vsub.translate.find_claude", lambda: fake_claude)
+    r = make_runner("claude", "opus")
+    assert isinstance(r, ClaudeRunner) and r.model == "opus"
+    with pytest.raises(ValueError):
+        make_runner("gpt")
+
+
+def test_agy_tool_attempt_is_reported(fake_agy, monkeypatch):
+    from vsub.translate import AgyRunner
+
+    monkeypatch.setenv("FAKE_MODE", "tool")
+    with pytest.raises(ClaudeError, match="RunCommand"):
+        AgyRunner(exe=fake_agy).ask("s", "i", "{}")
+
+
+@pytest.mark.parametrize("engine,model,tag", [
+    ("claude", "sonnet", "claude-sonnet"),
+    ("claude", None, "claude-sonnet"),
+    ("claude", "claude-opus-5-5", "claude-opus-5-5"),
+    ("gemini", "", "gemini"),
+    ("gemini", "gemini-3.8-flash-high", "gemini-3.8-flash-high"),
+    ("gemini", "Some Model/x", "gemini-some-model-x"),
+])
+def test_model_tag(engine, model, tag):
+    from vsub.translate import model_tag
+
+    assert model_tag(engine, model) == tag
+
+
+def test_translated_path_puts_model_before_language():
+    from vsub.translate import translated_path
+
+    assert translated_path("/a/phim.srt", "vi") == "/a/phim.vi.srt"
+    assert translated_path("/a/phim.srt", "vi", "claude-opus") == "/a/phim.claude-opus.vi.srt"
+
+
+def test_latest_translation_picks_newest_of_any_model(tmp_path):
+    import os
+
+    from vsub.translate import latest_translation, translations_of
+
+    src = tmp_path / "[Doraemon] phim.srt"   # ngoặc vuông: không được hiểu là mẫu glob
+    src.write_text("", encoding="utf-8")
+    old = tmp_path / "[Doraemon] phim.vi.srt"
+    a = tmp_path / "[Doraemon] phim.claude-sonnet.vi.srt"
+    b = tmp_path / "[Doraemon] phim.gemini-3.8-flash-high.vi.srt"
+    for i, f in enumerate((old, a, b)):
+        f.write_text("x", encoding="utf-8")
+        os.utime(f, (1000 + i, 1000 + i))
+    (tmp_path / "[Doraemon] phim.claude-sonnet.en.srt").write_text("x", encoding="utf-8")  # ngôn ngữ khác
+    (tmp_path / "[Doraemon] phim 2.vi.srt").write_text("x", encoding="utf-8")              # phim khác
+    (tmp_path / "[Doraemon] phim.ban-cu.vi.srt").write_text("x", encoding="utf-8")         # không phải tên model
+    assert translations_of(str(src), "vi") == [str(b), str(a), str(old)]
+    assert latest_translation(str(src), "vi") == str(b)
+    os.utime(a, (2000, 2000))
+    assert latest_translation(str(src), "vi") == str(a)
+    assert latest_translation(str(src), "ko") is None

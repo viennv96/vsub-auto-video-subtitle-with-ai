@@ -4,11 +4,12 @@
   vsub phim.mp4 --lang vi --embed       # + xuất phim.sub.mp4 có phụ đề mềm
   vsub phim.mp4 --burn                  # + in cứng phụ đề lên hình
   vsub reflow phim.transcript.json      # chia dòng lại, không cần nhận dạng lại
-  vsub embed phim.mp4 phim.vi.srt       # chỉ gắn phụ đề có sẵn
-  vsub phim.mp4 --to vi                 # + dịch sang tiếng Việt bằng Claude -> phim.vi.srt
-  vsub translate phim.srt --to vi       # dịch file .srt có sẵn
+  vsub embed phim.mp4 phim.claude-sonnet.vi.srt  # chỉ gắn phụ đề có sẵn
+  vsub phim.mp4 --to vi                 # + dịch sang tiếng Việt bằng Claude -> phim.claude-sonnet.vi.srt
+  vsub translate phim.srt --to vi --claude-model opus  # chỉ dịch lại phim.srt có sẵn -> phim.claude-opus.vi.srt
+  vsub phim.mp4 --to vi --engine gemini # dịch bằng Gemini qua Antigravity CLI (agy) thay cho Claude
   vsub phim.mp4 --to vi --dub           # + thuyết minh bằng VieNeu -> phim.thuyetminh.mp4
-  vsub dub phim.mp4                     # thuyết minh từ phim.vi.srt có sẵn
+  vsub dub phim.mp4                     # thuyết minh từ bản phim.*.vi.srt mới nhất
   vsub doctor                           # kiểm tra FFmpeg, Whisper, Claude, VieNeu; --install để cài
 """
 
@@ -45,11 +46,16 @@ def _reflow_opts(a):
 
 
 def _add_translate_args(p: argparse.ArgumentParser, flag: str = "--to") -> None:
-    g = p.add_argument_group("dịch bằng Claude CLI")
-    g.add_argument(flag, dest="to", help="dịch phụ đề sang ngôn ngữ này (vi, en, zh, ko...) bằng Claude")
+    g = p.add_argument_group("dịch bằng Claude CLI hoặc Gemini (Antigravity CLI)")
+    g.add_argument(flag, dest="to", help="dịch phụ đề sang ngôn ngữ này (vi, en, zh, ko...)")
+    g.add_argument("--engine", choices=["claude", "gemini"], default="claude",
+                   help="trình dịch: claude (Claude Code, mặc định) hoặc gemini (Antigravity CLI — agy)")
     g.add_argument("--glossary", help="file tên riêng, mỗi dòng: 田中 = Tanaka")
     g.add_argument("--notes", help="ghi chú cho Claude: bối cảnh phim, cách xưng hô...")
     g.add_argument("--claude-model", default="sonnet", help="model Claude (sonnet, opus, haiku...)")
+    g.add_argument("--gemini-model", default="",
+                   help="model cho --engine gemini, ví dụ gemini-3.8-flash-high (xem: agy models);"
+                        " bỏ trống = model đang chọn trong agy")
     g.add_argument("--link", action="append", default=[],
                    help="link về phim (trang phim, nhân vật…) — ghi vào hồ sơ phim, đọc một lần; lặp được")
     g.add_argument("--ref", action="append", default=[],
@@ -70,7 +76,7 @@ def _add_translate_args(p: argparse.ArgumentParser, flag: str = "--to") -> None:
 
 def _do_translate(srt: str, source: str | None, a, cues=None, position: str | None = None) -> str:
     from .formats import parse_srt, srt_position, write_subs
-    from .translate import ClaudeRunner, parse_glossary_text, translate_cues, translated_path
+    from .translate import make_runner, model_tag, parse_glossary_text, translate_cues, translated_path
 
     with open(srt, encoding="utf-8") as f:
         raw = f.read()
@@ -80,8 +86,9 @@ def _do_translate(srt: str, source: str | None, a, cues=None, position: str | No
     if a.glossary:
         with open(a.glossary, encoding="utf-8") as f:
             glossary = parse_glossary_text(f.read())
-    out = translated_path(srt, a.to)
-    runner = ClaudeRunner(model=a.claude_model)
+    tr_model = a.gemini_model if a.engine == "gemini" else a.claude_model
+    out = translated_path(srt, a.to, model_tag(a.engine, tr_model))
+    runner = make_runner(a.engine, tr_model)
     say = lambda m: print("• " + m, file=sys.stderr, flush=True)  # noqa: E731
     profile = story = episode = None
     if not a.no_profile:
@@ -109,7 +116,8 @@ def _do_translate(srt: str, source: str | None, a, cues=None, position: str | No
         remember(profile, a.to, episode, res, out)
     miss = f", {res.missing} câu giữ nguyên gốc" if res.missing else ""
     spl = f", tách {res.splits} câu gộp" if res.splits else ""
-    print(f"✔ Bản dịch: {out} ({len(res.cues)} câu{miss}{spl}, ~${res.cost_usd:.2f})")
+    cost = f", ~${res.cost_usd:.2f}" if res.cost_usd else ""
+    print(f"✔ Bản dịch: {out} ({len(res.cues)} câu{miss}{spl}{cost})")
     return out
 
 
@@ -287,9 +295,14 @@ def cmd_dub(a) -> None:
     video = os.path.abspath(a.video)
     if not os.path.exists(video):
         sys.exit(f"Không thấy file: {video}")
-    subs = a.subs or os.path.splitext(video)[0] + ".vi.srt"
-    if not os.path.exists(subs):
-        sys.exit(f"Không thấy phụ đề tiếng Việt: {subs} (tạo bằng: vsub \"{a.video}\" --to vi)")
+    from .translate import latest_translation
+
+    subs = a.subs or latest_translation(os.path.splitext(video)[0] + ".srt", "vi")
+    if not subs or not os.path.exists(subs):
+        sys.exit(f"Không thấy phụ đề tiếng Việt: {subs or os.path.splitext(video)[0] + '.*.vi.srt'}"
+                 f" (tạo bằng: vsub \"{a.video}\" --to vi)")
+    if not a.subs:
+        print(f"• Dùng bản dịch: {subs}", file=sys.stderr)
     _do_dub(video, subs, a, out=a.output)
 
 
@@ -307,7 +320,8 @@ def cmd_doctor(a) -> None:
     print()
     for d in missing:
         print(f"— {d.name} ({d.need.lower()}): {d.purpose}\n  " + d.guide.replace("\n", "\n  "))
-    keys = [d.key for d in missing if d.key in (a.install or [d.key for d in missing])]
+    # agy (Gemini) là trình dịch thay thế: chỉ cài khi gọi tên (--install agy)
+    keys = [d.key for d in missing if d.key in (a.install or [d.key for d in missing if d.key != "agy"])]
     if a.install is not None and keys:
         summary, script = install_plan(keys, a.model)
         print(f"\nSẽ chạy:\n{summary}")
@@ -343,7 +357,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_dub_args(r)
     r.set_defaults(func=cmd_run)
 
-    t = sub.add_parser("translate", help="dịch file .srt có sẵn bằng Claude CLI")
+    t = sub.add_parser("translate", help="dịch file .srt có sẵn bằng Claude CLI hoặc Gemini (agy)")
     t.add_argument("srt")
     t.add_argument("--from", dest="source", help="ngôn ngữ gốc (không bắt buộc)")
     _add_translate_args(t)
@@ -367,14 +381,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     d = sub.add_parser("dub", help="thuyết minh bằng VieNeu-TTS từ phụ đề tiếng Việt có sẵn")
     d.add_argument("video")
-    d.add_argument("subs", nargs="?", help="phụ đề tiếng Việt (mặc định: <tên video>.vi.srt)")
+    d.add_argument("subs", nargs="?", help="phụ đề tiếng Việt (mặc định: bản <tên video>.*.vi.srt mới nhất)")
     d.add_argument("-o", "--output", help="video xuất ra (mặc định: <tên video>.thuyetminh.mp4)")
     _add_dub_args(d, flag=False)
     d.set_defaults(func=cmd_dub)
 
     k = sub.add_parser("doctor", help="kiểm tra / cài các thành phần cần (FFmpeg, Whisper, Claude, VieNeu)")
     k.add_argument("-m", "--model", default="large-v3-turbo", help="model Whisper sẽ dùng (để kiểm tra đã tải chưa)")
-    k.add_argument("--install", nargs="*", choices=["ffmpeg", "whisper", "model", "sepmodel", "claude", "vieneu"],
+    k.add_argument("--install", nargs="*", choices=["ffmpeg", "whisper", "model", "sepmodel", "claude", "agy", "vieneu"],
                    help="cài các thành phần còn thiếu (mở Terminal, hỏi trước); không ghi tên = cài hết")
     k.set_defaults(func=cmd_doctor)
     return p

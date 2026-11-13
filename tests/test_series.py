@@ -211,13 +211,13 @@ def test_cli_translate_uses_profile(tmp_path, claude, monkeypatch):
     runner, calls = claude
     monkeypatch.setenv("VSUB_CLAUDE", runner.exe)
     _srt(tmp_path / "ep.1.srt", ["田中さん"])
-    _srt(tmp_path / "ep.1.vi.srt", ["Tanaka-san"])
+    _srt(tmp_path / "ep.1.gemini-3.8-flash-high.vi.srt", ["Tanaka-san"])  # bản dịch tập trước, tên có model
     _srt(tmp_path / "ep.2.srt", ["鈴木です"])
     cli.main(["translate", str(tmp_path / "ep.2.srt"), "--from", "ja", "--to", "vi",
               "--read-prev", "--use-profile", "--learn"])
-    assert (tmp_path / "ep.2.vi.srt").exists()
+    assert (tmp_path / "ep.2.claude-sonnet.vi.srt").exists()
     prof = Profile.load(str(tmp_path / "ho-so-phim.ep.json"))
-    assert sorted(prof.loaded["vi"]) == ["ep.1.vi.srt", "ep.2.vi.srt"]
+    assert sorted(prof.loaded["vi"]) == ["ep.1.gemini-3.8-flash-high.vi.srt", "ep.2.claude-sonnet.vi.srt"]
     assert len(calls("absorb")) == 1
     cli.main(["translate", str(tmp_path / "ep.2.srt"), "--to", "vi", "--no-profile"])
     assert len(calls("absorb")) == 1  # --no-profile: không nạp gì thêm
@@ -234,7 +234,7 @@ def test_cli_translate_defaults_do_not_touch_profile(tmp_path, claude, monkeypat
     _srt(tmp_path / "ep.1.vi.srt", ["Tanaka-san"])
     _srt(tmp_path / "ep.2.srt", ["鈴木です"])
     cli.main(["translate", str(tmp_path / "ep.2.srt"), "--from", "ja", "--to", "vi"])
-    assert (tmp_path / "ep.2.vi.srt").exists()
+    assert (tmp_path / "ep.2.claude-sonnet.vi.srt").exists()
     assert len(calls("absorb")) == 0                      # không đọc lại phụ đề tập 1
     path = tmp_path / "ho-so-phim.ep.json"
     if path.exists():                                     # có thể chưa từng tạo
@@ -255,3 +255,18 @@ def test_story_without_learned_keeps_user_fields(tmp_path):
     assert s["previous_episodes"] == [] and s["pronouns"] == []
     full = p.story("vi", (1, 2))
     assert full["glossary"]["沢"] == "Sawa" and full["previous_episodes"]
+
+
+@pytest.mark.parametrize("name", ["ep.3.claude-sonnet.vi.srt", "ep.3.gemini-3.8-flash-high.vi.srt",
+                                  "ep.3.gemini.vi.srt", "ep.3.vi.srt"])
+def test_model_tag_in_translation_name_keeps_episode(tmp_path, name):
+    from vsub.series import _original_of
+
+    assert series_key(name) == series_key("ep.3.mkv")
+    assert episode_of(name) == (0, 3)
+    (tmp_path / "ep.3.srt").write_text("", encoding="utf-8")
+    assert _original_of(str(tmp_path / name), "vi") == str(tmp_path / "ep.3.srt")
+
+
+def test_model_word_in_title_without_language_is_kept():
+    assert series_key("Project.Gemini.S01E02.mkv") != series_key("Project.S01E02.mkv")

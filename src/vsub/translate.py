@@ -70,6 +70,7 @@ class ClaudeRunner:
     exe: str | None = None
     timeout: int = 600
     total_cost: float = 0.0
+    name: str = "Claude"
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def __post_init__(self):
@@ -119,6 +120,122 @@ class ClaudeRunner:
         if data.get("is_error"):
             raise ClaudeError(str(data.get("result") or data.get("subtype")))
         return str(data.get("result", ""))
+
+
+# ------------------------------------------------------------------ Gemini qua Antigravity CLI
+
+def find_agy() -> str | None:
+    """Antigravity CLI (`agy`) — bộ cài chính thức đặt ở ~/.local/bin (macOS/Linux) hoặc
+    %LOCALAPPDATA%\\agy\\bin (Windows)."""
+    home = os.path.expanduser("~")
+    cands = [os.environ.get("VSUB_AGY"), shutil.which("agy"), f"{home}/.local/bin/agy",
+             "/opt/homebrew/bin/agy", "/usr/local/bin/agy"]
+    if sys.platform.startswith("win"):
+        local = os.environ.get("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")
+        cands += [os.path.join(local, "agy", "bin", "agy.exe"), os.path.join(home, ".local", "bin", "agy.exe")]
+    for c in cands:
+        if c and os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+    return None
+
+
+AGY_RULES = ("You are used as a plain text-in/text-out function. Do not use any tools: do not read or "
+             "write files, run commands, search the web or browse. Answer only with the requested JSON.")
+
+
+@dataclass
+class AgyRunner:
+    """Gọi Gemini qua Antigravity CLI (`agy`), cùng cách dùng với ClaudeRunner.
+
+    agy không có tuỳ chọn thay system prompt -> ghép luật vào đầu tin nhắn. Tin nhắn đi qua stdin
+    dạng stream-json (Windows giới hạn dòng lệnh ~32 nghìn ký tự, cả tập phim dài hơn thế).
+    Chạy trong thư mục trống để không nạp AGENTS.md / GEMINI.md của project nào; ở chế độ headless
+    agy tự từ chối mọi thao tác cần xin phép."""
+    model: str = ""            # "" = model đang chọn trong agy
+    exe: str | None = None
+    timeout: int = 600
+    total_cost: float = 0.0    # agy không báo giá tiền (tính vào quota của tài khoản Google)
+    total_tokens: int = 0
+    name: str = "Gemini"
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def __post_init__(self):
+        self.exe = self.exe or find_agy()
+        if not self.exe:
+            raise ClaudeError(
+                "Không tìm thấy Antigravity CLI (agy). Mở tab “Thư viện” trong app để cài và đăng nhập "
+                "(hoặc chạy: vsub doctor --install agy)."
+            )
+
+    def command(self) -> list[str]:
+        exe = self.exe or ""
+        cmd = [sys.executable, exe] if exe.lower().endswith(".py") else [exe]
+        cmd += ["--input-format", "stream-json", "--output-format", "stream-json"]
+        if self.model:
+            cmd += ["--model", self.model]
+        return cmd
+
+    def ask(self, system: str, instruction: str, payload: str) -> str:
+        message = f"{system}\n\n{AGY_RULES}\n\n<input>\n{payload}\n</input>\n\n{instruction}"
+        line = json.dumps({"event": "user", "message": {"content": message}}, ensure_ascii=False) + "\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                proc = subprocess.run(
+                    self.command(), input=line, capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=self.timeout, cwd=tmp,
+                )
+            except subprocess.TimeoutExpired as e:
+                raise ClaudeError(f"Antigravity CLI quá {self.timeout}s không trả lời") from e
+        result = None
+        for raw in proc.stdout.splitlines():
+            try:
+                ev = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(ev, dict) and ev.get("event") == "result" and isinstance(ev.get("result"), dict):
+                result = ev["result"]
+        err = (proc.stderr or "").strip()
+        if result is None:
+            msg = (err or proc.stdout or "").strip()[:500]
+            raise ClaudeError(self._explain(msg) or f"Antigravity CLI lỗi (mã {proc.returncode}): {msg}")
+        with self._lock:
+            self.total_tokens += int((result.get("usage") or {}).get("total_tokens") or 0)
+        if result.get("status") != "SUCCESS":
+            msg = str(result.get("error") or result.get("status") or err)[:500]
+            raise ClaudeError(self._explain(msg) or f"Antigravity CLI lỗi: {msg}")
+        response = str(result.get("response") or "")
+        if not response.strip() and result.get("denied_actions"):
+            # model cố dùng tool (chạy lệnh, đọc file…), headless tự chặn -> trả lời rỗng; lô này thử lại
+            names = ", ".join(str(a.get("display_name") or a.get("action")) for a in result["denied_actions"])
+            raise ClaudeError(f"Gemini cố dùng tool ({names}) thay vì trả lời — đã bị chặn")
+        return response
+
+    @staticmethod
+    def _explain(msg: str) -> str | None:
+        low = msg.lower()
+        if "authentication required" in low or "not authenticated" in low or "sign in" in low:
+            # chữ "login" để translate_cues dừng hẳn thay vì thử lại từng lô
+            return ("Antigravity CLI chưa đăng nhập (login): mở Terminal, chạy agy một lần để đăng nhập "
+                    "tài khoản Google, hoặc bấm “Đăng nhập” ở tab “Thư viện”.")
+        if "quota" in low or "rate limit" in low or "resource_exhausted" in low or "429" in msg:
+            return f"Gemini đã hết lượt dùng (quota) của tài khoản: {msg[:300]}"
+        return None
+
+
+ENGINES = {"claude": "Claude", "gemini": "Gemini"}
+
+
+def make_runner(engine: str = "claude", model: str | None = None):
+    """Trình dịch theo tên: "claude" (Claude Code) hoặc "gemini" (Antigravity CLI)."""
+    if engine == "gemini":
+        return AgyRunner(model=model or "")
+    if engine == "claude":
+        return ClaudeRunner(model=model or "sonnet")
+    raise ValueError(f"Không biết trình dịch {engine!r} (chọn: {', '.join(ENGINES)})")
+
+
+def runner_name(runner) -> str:
+    return getattr(runner, "name", "Claude")
 
 
 def extract_json(text: str):
@@ -427,7 +544,8 @@ def translate_cues(
     known = story or {}
 
     # 1) bảng tên riêng + xưng hô
-    say("Claude đang đọc cả tập, lập bảng tên riêng và xưng hô…")
+    who = runner_name(runner)
+    say(f"{who} đang đọc cả tập, lập bảng tên riêng và xưng hô…")
     glossary: dict[str, str] = dict(known.get("glossary") or {})
     pronouns = [dict(p) for p in known.get("pronouns") or []]
     ep_pronouns: list[dict] = []
@@ -514,7 +632,7 @@ def translate_cues(
         return got
 
     done = 0
-    say(f"Claude đang dịch {len(cues)} câu ({len(batches)} lô)…")
+    say(f"{who} đang dịch {len(cues)} câu ({len(batches)} lô)…")
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         futs = [pool.submit(run_batch, b) for b in batches]
         try:
@@ -558,7 +676,7 @@ def translate_cues(
                                   workers, cancel, say)
         too_fast = sum(1 for c, ok in zip(new_cues, translated) if ok and cue_cps(c) > cps)
         say(f"Tốc độ đọc: {too_fast}/{len(new_cues)} câu nhanh hơn {cps:g} ký tự/giây"
-            + (f" (Claude đã rút gọn {shortened} câu)" if shortened else ""))
+            + (f" ({who} đã rút gọn {shortened} câu)" if shortened else ""))
     return TranslateResult(new_cues, glossary, ep_notes, missing, runner.total_cost, splits,
                            ep_pronouns, summary, ending, cps, too_fast, shortened)
 
@@ -590,7 +708,7 @@ def _shorten_pass(runner: ClaudeRunner, cues: list[Cue], srcs: list[str], transl
     over = [i for i, (c, ok) in enumerate(zip(cues, translated)) if ok and cue_cps(c) > cps * SHORTEN_TOLERANCE]
     if not over:
         return 0
-    say(f"Claude đang rút gọn {len(over)} câu đọc không kịp…")
+    say(f"{runner_name(runner)} đang rút gọn {len(over)} câu đọc không kịp…")
     system, instr = shorten_prompts(target)
     cur = [join_lines(c.lines) for c in cues]
 
@@ -685,6 +803,52 @@ def split_cue(cue: Cue, original: str, parts: list[tuple[str, str]], min_part: f
     return [tuple(x) for x in out]
 
 
-def translated_path(srt: str, target: str) -> str:
+# tên model gắn trong tên bản dịch: phim.claude-sonnet.vi.srt, phim.gemini-3.8-flash-high.vi.srt
+# (mã ngôn ngữ để cuối cùng để IINA / VLC / Plex / Infuse vẫn nhận ra là phụ đề tiếng Việt)
+MODEL_TAG_RE = re.compile(r"\.(?:claude|gemini)(?:-[\w.-]*)?$", re.I)
+
+
+def model_tag(engine: str = "claude", model: str | None = None) -> str:
+    """Nhãn model để gắn vào tên file bản dịch: "claude-sonnet", "gemini-3.8-flash-high", "gemini"."""
+    model = (model or ("sonnet" if engine == "claude" else "")).strip().lower()
+    prefix = "gemini" if engine == "gemini" else "claude"
+    if model and not model.startswith(prefix):
+        model = f"{prefix}-{model}"
+    tag = re.sub(r"[^\w.-]+", "-", model or prefix).strip("-.")
+    return tag or prefix
+
+
+def translated_path(srt: str, target: str, tag: str | None = None) -> str:
+    """phim.srt -> phim.<tag>.<target>.srt (không có tag: phim.<target>.srt)."""
     base, ext = os.path.splitext(srt)
-    return f"{base}.{target}{ext or '.srt'}"
+    return f"{base}.{tag}.{target}{ext or '.srt'}" if tag else f"{base}.{target}{ext or '.srt'}"
+
+
+def translations_of(srt: str, target: str) -> list[str]:
+    """Mọi bản dịch sang `target` của phim.srt (có hoặc không có tên model), mới nhất trước."""
+    base, ext = os.path.splitext(srt)
+    ext = ext or ".srt"
+    folder, stem = os.path.split(base)
+    want = f".{target}{ext}".lower()
+    found = []
+    try:
+        names = os.listdir(folder or ".")
+    except OSError:
+        return []
+    for n in names:
+        if not n.lower().endswith(want) or not n.startswith(stem + "."):
+            continue
+        mid = n[len(stem): len(n) - len(want)]  # "" hoặc ".claude-sonnet"
+        if mid == "" or MODEL_TAG_RE.fullmatch(mid):
+            found.append(os.path.join(folder, n))
+    return sorted(found, key=lambda f: os.path.getmtime(f), reverse=True)
+
+
+def latest_translation(srt: str, target: str) -> str | None:
+    found = translations_of(srt, target)
+    return found[0] if found else None
+
+
+def strip_model_tag(name: str) -> str:
+    """"phim.claude-sonnet" -> "phim" (tên đã bỏ đuôi ngôn ngữ và phần mở rộng)."""
+    return MODEL_TAG_RE.sub("", name)
